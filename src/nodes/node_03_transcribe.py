@@ -1,26 +1,56 @@
-from src.schema.state import EditorState
-from src.providers.transcriber import TranscriberProvider
+"""Node 3: transcribe, then merge fragments into sentence units."""
 
-def node_03_transcribe(state: EditorState) -> dict:
-    """
-    Node 3: Generate timestamped transcript with word-level timestamps and speaker labels.
-    """
-    logs = list(state.logs)
-    logs.append("[Node 3] Running timestamped transcription...")
-    
-    transcriber = TranscriberProvider()
-    
-    # Prefer extracted audio file for Whisper, fall back to source URL for YouTube Transcript API
-    audio_path = state.audio_file_path or state.media_file_path or state.source_url or ""
-    segments = transcriber.transcribe(audio_path, source_url=state.source_url)
-    
-    full_transcript_text = "\n".join([f"[{seg.start:.1f}s - {seg.end:.1f}s] {seg.speaker}: {seg.text}" for seg in segments])
-    
-    logs.append(f"[Node 3] Transcription complete. {len(segments)} timestamped segments generated.")
-    
-    return {
-        "transcript_segments": segments,
-        "full_transcript_text": full_transcript_text,
+from __future__ import annotations
+
+from typing import Any
+
+from src.analysis.segmentation import build_sentence_units
+from src.errors import TranscriptionError
+from src.nodes._base import pipeline_node
+from src.providers.transcriber import TranscriberProvider
+from src.schema.state import EditorState
+
+
+@pipeline_node(stage="transcribe", label="Node 3 Transcribe")
+def node_03_transcribe(state: EditorState) -> dict[str, Any]:
+    provider = TranscriberProvider()
+
+    if state.demo_mode:
+        result = provider.load_fixture()
+    else:
+        result = provider.transcribe(state.audio_file_path, source_url=state.source_url)
+
+    if not result.segments:
+        raise TranscriptionError("Transcription produced no segments.")
+
+    units = build_sentence_units(result.segments)
+    if not units:
+        raise TranscriptionError(
+            "Transcript contained no usable text after merging fragments."
+        )
+
+    speech_duration = units[-1].end - units[0].start
+    logs = [
+        f"[Node 3 Transcribe] {result.source}: {len(result.segments)} segments "
+        f"-> {len(units)} sentence units covering {speech_duration:.1f}s"
+    ]
+    warnings: list[str] = []
+    if result.source == "youtube_captions":
+        warnings.append(
+            "YouTube captions carry no speaker or word-level timing data; "
+            "speaker labels are heuristic and word timings are interpolated."
+        )
+
+    update: dict[str, Any] = {
+        "transcript_segments": result.segments,
+        "sentence_units": units,
+        "transcript_source": result.source,
         "current_node": "NODE_03_TRANSCRIBE_COMPLETE",
-        "logs": logs
+        "logs": logs,
     }
+    if warnings:
+        update["warnings"] = warnings
+    # Without probed media (demo mode) the transcript defines the duration.
+    if state.duration_seconds <= 0:
+        update["duration_seconds"] = round(units[-1].end, 3)
+    return update

@@ -1,28 +1,42 @@
-from src.schema.state import EditorState
-from src.providers.downloader import MediaDownloaderProvider
+"""Node 1: acquire media, or short-circuit in demo mode."""
 
-def node_01_download(state: EditorState) -> dict:
-    """
-    Node 1: Ingest video from YouTube URL or validate local file path.
-    """
-    source = state.source_url or state.input_file_path or "https://www.youtube.com/watch?v=sample_podcast"
-    downloader = MediaDownloaderProvider()
-    
-    logs = list(state.logs)
-    logs.append(f"[Node 1] Ingesting media source: {source}")
-    
-    info = downloader.download(source)
-    
-    podcast_title = info.get("title", state.podcast_title)
-    media_file_path = info.get("file_path")
-    duration_seconds = info.get("duration", 0.0)
-    
-    logs.append(f"[Node 1] Download complete: '{podcast_title}' ({duration_seconds}s)")
-    
+from __future__ import annotations
+
+from typing import Any
+
+from src.nodes._base import pipeline_node
+from src.providers.downloader import MediaDownloaderProvider
+from src.schema.state import EditorState
+
+
+@pipeline_node(stage="download", label="Node 1 Download")
+def node_01_download(state: EditorState) -> dict[str, Any]:
+    if state.demo_mode:
+        # No media exists in demo mode; the fixture transcript is loaded in
+        # node 3. Provenance is stamped here so it propagates even if the run
+        # is inspected mid-pipeline.
+        return {
+            "media_source": "fixture",
+            "current_node": "NODE_01_SKIPPED_DEMO",
+            "podcast_title": "Tech Insights (demo fixture)",
+            "logs": ["[Node 1 Download] DEMO MODE: no media acquired."],
+            "warnings": [
+                "Running on the bundled fixture transcript. Output is synthetic."
+            ],
+        }
+
+    source = state.source or state.source_url or state.input_file_path or ""
+    info = MediaDownloaderProvider().download(source)
+
     return {
-        "podcast_title": podcast_title,
-        "media_file_path": media_file_path,
-        "duration_seconds": duration_seconds,
+        "podcast_title": info.title,
+        "media_file_path": info.file_path,
+        "duration_seconds": info.duration,
+        "media_has_video": info.has_video,
+        "media_source": info.media_source,
         "current_node": "NODE_01_DOWNLOAD_COMPLETE",
-        "logs": logs
+        "logs": [
+            f"[Node 1 Download] {info.media_source}: {info.title!r} "
+            f"({info.duration:.1f}s, video={info.has_video})"
+        ],
     }

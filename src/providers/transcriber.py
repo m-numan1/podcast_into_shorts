@@ -1,154 +1,309 @@
+"""Transcription: YouTube captions when available, otherwise local Whisper.
+
+Two behaviour changes:
+
+  * There is no hidden fallback transcript. When every backend fails this
+    raises `TranscriptionError`. The original returned a hardcoded 8-segment
+    script about AI startups, which is why the pipeline "worked" offline and
+    why every keyword heuristic downstream was tuned to that script.
+
+  * YouTube ID extraction is host-anchored. The old regex `(?:v=|/)([\\w-]{11})`
+    matched ordinary file paths -- `/home/user/episode_042.mp3` yielded the
+    "video id" `episode_042` and triggered a bogus API call.
+"""
+
+from __future__ import annotations
+
+import json
 import re
-from typing import List, Optional
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from config.settings import settings
+from src.errors import MissingDependencyError, TranscriptionError
 from src.schema.clips import TranscriptSegment, WordTimestamp
+from src.utils.logging_config import get_logger
+
+log = get_logger(__name__)
+
+YOUTUBE_HOSTS = {
+    "youtube.com", "www.youtube.com", "m.youtube.com",
+    "music.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com",
+}
+YOUTUBE_SHORT_HOSTS = {"youtu.be", "www.youtu.be"}
+VIDEO_ID_RE = re.compile(r"^[0-9A-Za-z_-]{11}$")
+# Path prefixes that carry the id as the next path element.
+ID_BEARING_PREFIXES = ("shorts", "embed", "live", "v")
+
+FIXTURE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "demo_transcript.json"
+
+
+@dataclass(frozen=True)
+class TranscriptResult:
+    """Segments plus where they came from, so provenance is never guessed."""
+
+    segments: list[TranscriptSegment]
+    source: str  # "youtube_captions" | "whisper" | "fixture"
+
 
 def extract_youtube_id(source: str) -> str:
-    patterns = [
-        r'(?:v=|\/)([0-9A-Za-z_-]{11})',
-        r'youtu\.be\/([0-9A-Za-z_-]{11})'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, source)
-        if match:
-            return match.group(1)
+    """Return an 11-character YouTube video id, or "" if this is not a
+    YouTube URL. Host-anchored: never matches local paths or other domains."""
+    if not source:
+        return ""
+    try:
+        parsed = urlparse(source)
+    except ValueError:
+        return ""
+    if parsed.scheme not in ("http", "https"):
+        return ""
+
+    host = (parsed.netloc or "").lower().split(":")[0]
+    parts = [p for p in (parsed.path or "").split("/") if p]
+
+    if host in YOUTUBE_SHORT_HOSTS:
+        candidate = parts[0] if parts else ""
+        return candidate if VIDEO_ID_RE.match(candidate) else ""
+
+    if host in YOUTUBE_HOSTS:
+        # /watch?v=<id>
+        vals = parse_qs(parsed.query or "").get("v", [])
+        if vals and VIDEO_ID_RE.match(vals[0]):
+            return vals[0]
+        # /shorts/<id>, /embed/<id>, /live/<id>, /v/<id>
+        if len(parts) >= 2 and parts[0].lower() in ID_BEARING_PREFIXES:
+            return parts[1] if VIDEO_ID_RE.match(parts[1]) else ""
     return ""
 
+
+@lru_cache(maxsize=2)
+def _load_whisper_model(name: str):
+    """Load and cache a Whisper model.
+
+    The original called `whisper.load_model("base")` inside the transcribe
+    method, reloading ~140 MB of weights on every invocation.
+    """
+    try:
+        import whisper
+    except ImportError as exc:
+        raise MissingDependencyError(
+            "openai-whisper",
+            "pip install openai-whisper  (also requires torch and ffmpeg)",
+        ) from exc
+    log.info("Loading Whisper model %r (first call only)", name)
+    return whisper.load_model(name)
+
+
 class TranscriberProvider:
-    def transcribe(self, audio_path: str, source_url: Optional[str] = None) -> List[TranscriptSegment]:
+    def transcribe(
+        self,
+        audio_path: str | None,
+        *,
+        source_url: str | None = None,
+    ) -> TranscriptResult:
+        """Produce a timestamped transcript.
+
+        Tries YouTube captions (fast, free) then Whisper. Raises
+        `TranscriptionError` if neither yields segments -- it never invents one.
         """
-        Transcribes audio file or YouTube source to timestamped segments with word-level timestamps.
-        First tries YouTubeTranscriptApi if YouTube source, then Whisper, then realistic default podcast transcript.
-        
-        Args:
-            audio_path: Path to local audio file (preferred for Whisper)
-            source_url: Original YouTube URL (used for YouTube Transcript API)
+        attempts: list[str] = []
+
+        video_id = extract_youtube_id(source_url or "")
+        if video_id:
+            try:
+                segments = self._from_youtube_captions(video_id)
+                if segments:
+                    log.info("Using YouTube captions (%d segments)", len(segments))
+                    return TranscriptResult(segments, "youtube_captions")
+                attempts.append("youtube_captions: returned no usable segments")
+            except MissingDependencyError as exc:
+                attempts.append(f"youtube_captions: {exc}")
+                log.warning("YouTube captions unavailable: %s", exc)
+            except Exception as exc:
+                attempts.append(f"youtube_captions: {type(exc).__name__}: {exc}")
+                log.warning("YouTube caption fetch failed: %s: %s", type(exc).__name__, exc)
+
+        if audio_path and Path(audio_path).exists():
+            try:
+                segments = self._from_whisper(audio_path)
+                if segments:
+                    log.info("Using Whisper transcript (%d segments)", len(segments))
+                    return TranscriptResult(segments, "whisper")
+                attempts.append("whisper: produced no segments")
+            except MissingDependencyError as exc:
+                attempts.append(f"whisper: {exc}")
+                log.warning("Whisper unavailable: %s", exc)
+            except Exception as exc:
+                attempts.append(f"whisper: {type(exc).__name__}: {exc}")
+                log.warning("Whisper transcription failed: %s: %s", type(exc).__name__, exc)
+        else:
+            attempts.append(f"whisper: no readable audio file at {audio_path!r}")
+
+        raise TranscriptionError(
+            "Could not transcribe the source. Attempts:\n  - " + "\n  - ".join(attempts),
+            "Install openai-whisper for local transcription, or use a YouTube URL "
+            "that has captions. Run with --demo to exercise the pipeline on the "
+            "bundled fixture transcript instead.",
+        )
+
+    # ------------------------------------------------------------- fixture
+
+    def load_fixture(self) -> TranscriptResult:
+        """Load the bundled demo transcript.
+
+        Only reachable via an explicit `--demo` flag. Results built from it are
+        stamped `transcript_source="fixture"` all the way to the JSON output.
         """
-        # Case 1: Fetch real YouTube transcript if YouTube URL/ID present
-        yt_source = source_url or audio_path
-        yt_id = extract_youtube_id(yt_source)
-        if yt_id:
-            try:
-                from youtube_transcript_api import YouTubeTranscriptApi
-                raw_transcript = None
-                try:
-                    raw_transcript = YouTubeTranscriptApi().fetch(yt_id)
-                except Exception:
-                    try:
-                        raw_transcript = YouTubeTranscriptApi.get_transcript(yt_id)
-                    except Exception:
-                        pass
-
-                if raw_transcript:
-                    segments = []
-                    prev_speaker = None
-                    speaker_change_threshold = 2.0  # seconds gap suggests speaker change
-                    
-                    for idx, item in enumerate(raw_transcript):
-                        # Convert dict or object
-                        text = (item.get('text', '') if isinstance(item, dict) else getattr(item, 'text', '')).replace('\n', ' ').strip()
-                        if not text:
-                            continue
-                        start = float(item.get('start', 0.0) if isinstance(item, dict) else getattr(item, 'start', 0.0))
-                        duration = float(item.get('duration', 0.0) if isinstance(item, dict) else getattr(item, 'duration', 0.0))
-                        end = round(start + max(duration, 2.0), 2)
-                        
-                        # Improved speaker estimation: use gaps and punctuation patterns
-                        if segments:
-                            prev_end = segments[-1].end
-                            gap = start - prev_end
-                            prev_text = segments[-1].text
-                            # Speaker likely changed if there's a significant gap or Q&A pattern
-                            if gap > speaker_change_threshold or prev_text.strip().endswith("?"):
-                                speaker = "Guest" if segments[-1].speaker == "Host" else "Host"
-                            else:
-                                speaker = segments[-1].speaker
-                        else:
-                            speaker = "Host"
-                        
-                        words = []
-                        word_list = text.split()
-                        dur_per_word = (end - start) / max(len(word_list), 1)
-                        for w_idx, w in enumerate(word_list):
-                            w_start = start + (w_idx * dur_per_word)
-                            w_end = w_start + dur_per_word
-                            words.append(WordTimestamp(word=w, start=round(w_start, 2), end=round(w_end, 2)))
-
-                        segments.append(TranscriptSegment(
-                            id=idx + 1,
-                            start=round(start, 2),
-                            end=round(end, 2),
-                            text=text,
-                            speaker=speaker,
-                            words=words
-                        ))
-                    if segments:
-                        return segments
-            except Exception:
-                pass
-
-        # Case 2: Use Whisper if available locally (requires actual audio file, not URL)
-        if audio_path and not audio_path.startswith("http"):
-            try:
-                import whisper
-                import os
-                # Only attempt Whisper if the file exists and is larger than a stub
-                if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
-                    model = whisper.load_model("base")
-                    result = model.transcribe(audio_path, word_timestamps=True)
-                    segments = []
-                    for idx, seg in enumerate(result.get("segments", [])):
-                        words = []
-                        for w in seg.get("words", []):
-                            words.append(WordTimestamp(
-                                word=w.get("word", ""),
-                                start=float(w.get("start", 0.0)),
-                                end=float(w.get("end", 0.0)),
-                                confidence=float(w.get("probability", 1.0))
-                            ))
-                        segments.append(TranscriptSegment(
-                            id=idx + 1,
-                            start=float(seg.get("start", 0.0)),
-                            end=float(seg.get("end", 0.0)),
-                            text=seg.get("text", "").strip(),
-                            speaker="Host" if idx % 2 == 0 else "Guest",
-                            words=words
-                        ))
-                    if segments:
-                        return segments
-            except Exception:
-                pass
-
-        # High quality realistic default podcast transcript generator for offline/fast test execution
-        return self._generate_sample_podcast_transcript()
-
-    def _generate_sample_podcast_transcript(self) -> List[TranscriptSegment]:
-        sample_data = [
-            (0.0, 12.0, "Host", "Welcome back to Tech Insights. Today we're diving deep into why 99% of AI startups fail within their first six months."),
-            (12.5, 38.0, "Guest", "The truth is, most founders spend 90% of their time building wrappers around APIs without solving a core human pain point. When OpenAI updates a model, their entire business vanishes overnight."),
-            (38.5, 65.0, "Host", "That is a terrifying reality. Can you share a concrete example of a company that actually built an unshakeable moat?"),
-            (65.5, 110.0, "Guest", "Absolutely. Look at company X. Instead of focusing on raw text generation, they integrated directly into complex enterprise workflows. They built unique proprietary data flywheels that get smarter with every single user interaction. You cannot copy that with a single prompt."),
-            (110.5, 135.0, "Host", "Wait, so what is the exact formula for a young developer listening right now who wants to build something enduring?"),
-            (135.5, 190.0, "Guest", "Rule number one: Stop chasing shiny technology. Find a boring, painful, high-friction workflow in legal, healthcare, or logistics. Automate 80% of it, keep a human in the loop for the critical 20%, and sell outcome rather than software seats."),
-            (190.5, 230.0, "Host", "That is incredible advice. People forget that utility always beats novelty in the long run."),
-            (230.5, 280.0, "Guest", "Precisely! Novelty lasts three weeks. Utility builds billion-dollar enterprise value that lasts decades.")
+        if not FIXTURE_PATH.exists():
+            raise TranscriptionError(f"Demo fixture missing at {FIXTURE_PATH}")
+        raw = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        segments = [
+            self._build_segment(
+                idx=i + 1,
+                start=float(item["start"]),
+                end=float(item["end"]),
+                speaker=item.get("speaker", "Speaker_1"),
+                text=item["text"],
+            )
+            for i, item in enumerate(raw["segments"])
         ]
-        
-        segments = []
-        for idx, (start, end, speaker, text) in enumerate(sample_data):
-            words = []
-            word_list = text.split()
-            dur_per_word = (end - start) / max(len(word_list), 1)
-            for w_idx, w in enumerate(word_list):
-                w_start = start + (w_idx * dur_per_word)
-                w_end = w_start + dur_per_word
-                words.append(WordTimestamp(word=w, start=round(w_start, 2), end=round(w_end, 2)))
-            
-            segments.append(TranscriptSegment(
-                id=idx + 1,
-                start=start,
-                end=end,
-                text=text,
-                speaker=speaker,
-                words=words
-            ))
+        log.warning(
+            "DEMO MODE: using bundled fixture transcript (%d segments). "
+            "Output is synthetic and must not be treated as a real analysis.",
+            len(segments),
+        )
+        return TranscriptResult(segments, "fixture")
+
+    # ------------------------------------------------------------ backends
+
+    def _from_youtube_captions(self, video_id: str) -> list[TranscriptSegment]:
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+        except ImportError as exc:
+            raise MissingDependencyError(
+                "youtube-transcript-api", "pip install youtube-transcript-api"
+            ) from exc
+
+        raw = self._fetch_captions(YouTubeTranscriptApi, video_id)
+        segments: list[TranscriptSegment] = []
+        for item in raw:
+            text = self._field(item, "text", "").replace("\n", " ").strip()
+            if not text:
+                continue
+            start = float(self._field(item, "start", 0.0))
+            duration = float(self._field(item, "duration", 0.0))
+            # Caption cues carry no reliable end time; clamp to a sane minimum
+            # rather than the old blanket `max(duration, 2.0)`.
+            end = start + max(duration, 0.5)
+            speaker = self._guess_speaker(segments)
+            segments.append(
+                self._build_segment(len(segments) + 1, start, end, speaker, text)
+            )
         return segments
+
+    @staticmethod
+    def _fetch_captions(api_cls, video_id: str):
+        """Support both youtube-transcript-api v1.x and v0.6.x call shapes."""
+        errors = []
+        try:
+            return api_cls().fetch(video_id)  # v1.x instance API
+        except AttributeError as exc:
+            errors.append(f"v1 fetch: {exc}")
+        except Exception as exc:
+            errors.append(f"v1 fetch: {type(exc).__name__}: {exc}")
+        try:
+            return api_cls.get_transcript(video_id)  # v0.6.x classmethod
+        except Exception as exc:
+            errors.append(f"v0 get_transcript: {type(exc).__name__}: {exc}")
+        raise TranscriptionError(
+            f"No caption track retrievable for video {video_id}: " + "; ".join(errors)
+        )
+
+    def _from_whisper(self, audio_path: str) -> list[TranscriptSegment]:
+        model = _load_whisper_model(settings.whisper_model)
+        log.info("Transcribing with Whisper (%s); this can take a while.", settings.whisper_model)
+        result = model.transcribe(
+            audio_path,
+            word_timestamps=True,
+            language=settings.transcript_language,
+            verbose=False,
+        )
+        segments: list[TranscriptSegment] = []
+        for idx, seg in enumerate(result.get("segments", [])):
+            words = [
+                WordTimestamp(
+                    word=w.get("word", "").strip(),
+                    start=float(w.get("start", 0.0)),
+                    end=float(w.get("end", 0.0)),
+                    confidence=float(w.get("probability", 1.0)),
+                )
+                for w in seg.get("words", [])
+                if w.get("word", "").strip()
+            ]
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            segments.append(
+                TranscriptSegment(
+                    id=idx + 1,
+                    start=float(seg.get("start", 0.0)),
+                    end=float(seg.get("end", 0.0)),
+                    text=text,
+                    # Whisper does not diarize. Label honestly instead of
+                    # alternating "Host"/"Guest" by segment index, which the
+                    # original did and which is indistinguishable from a guess.
+                    speaker="Speaker_unknown",
+                    words=words,
+                )
+            )
+        return segments
+
+    # ------------------------------------------------------------- helpers
+
+    @staticmethod
+    def _field(item, name: str, default):
+        if isinstance(item, dict):
+            return item.get(name, default)
+        return getattr(item, name, default)
+
+    @staticmethod
+    def _guess_speaker(previous: list[TranscriptSegment]) -> str:
+        """Heuristic turn-taking label for caption tracks, which carry no
+        speaker data. Named `Speaker_A`/`Speaker_B` rather than `Host`/`Guest`
+        so nobody mistakes it for real diarization."""
+        if not previous:
+            return "Speaker_A"
+        prev = previous[-1]
+        looks_like_turn_change = prev.text.rstrip().endswith("?")
+        if looks_like_turn_change:
+            return "Speaker_B" if prev.speaker == "Speaker_A" else "Speaker_A"
+        return prev.speaker
+
+    @staticmethod
+    def _build_segment(
+        idx: int, start: float, end: float, speaker: str, text: str
+    ) -> TranscriptSegment:
+        """Build a segment, interpolating word timings evenly.
+
+        Interpolation is only a placeholder for caption/fixture input, which
+        has no word data. Whisper supplies real per-word times.
+        """
+        word_list = text.split()
+        span = max(end - start, 0.01)
+        per_word = span / max(len(word_list), 1)
+        words = [
+            WordTimestamp(
+                word=w,
+                start=round(start + i * per_word, 3),
+                end=round(start + (i + 1) * per_word, 3),
+                # Flag interpolation so downstream code can prefer real timings.
+                confidence=0.5,
+            )
+            for i, w in enumerate(word_list)
+        ]
+        return TranscriptSegment(
+            id=idx, start=round(start, 3), end=round(end, 3),
+            text=text, speaker=speaker, words=words,
+        )

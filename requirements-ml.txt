@@ -1,0 +1,11 @@
+# Optional: local Whisper transcription.
+#
+# Installs PyTorch (~2 GB). Only needed to transcribe local media files or
+# YouTube videos without caption tracks. Also requires ffmpeg on PATH.
+#
+#   pip install -r requirements.txt -r requirements-ml.txt
+
+-r requirements.txt
+
+openai-whisper>=20231117
+torch>=2.0

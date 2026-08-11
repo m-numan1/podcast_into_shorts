@@ -1,332 +1,465 @@
-import sys
-import json
-import urllib.parse
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
-from src.graph.workflow import VideoEditorPipeline
-from config.settings import settings
+"""Local web dashboard.
 
-HTML_PAGE = """
-<!DOCTYPE html>
+Fixes over the original:
+  B19 clip data was interpolated into `innerHTML`, so a transcript or video
+      title containing markup executed as script. The client now builds nodes
+      and assigns `textContent`.
+  B20 `do_POST` had no try/except and read `Content-Length` unbounded; a
+      malformed body produced an unhandled exception and no JSON response.
+  B21 `HTTPServer` is single-threaded while `pipeline.run()` blocks for minutes
+      under Whisper, so one request stalled every other. Analysis now runs in a
+      worker thread and the client polls for progress.
+
+Also: the external Google Fonts stylesheet is gone (it broke the offline mode
+the project advertises), errors/warnings/provenance are surfaced, and results
+state plainly when they are synthetic or heuristically scored.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import uuid
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+from config.settings import settings
+from src.utils.logging_config import get_logger, setup_logging
+
+log = get_logger(__name__)
+
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+
+HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Video Editor for Podcasters</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-main: #0B0F19;
-            --bg-card: #111827;
-            --bg-card-hover: #1F2937;
-            --accent-primary: #6366F1;
-            --accent-glow: rgba(99, 102, 241, 0.4);
-            --accent-success: #10B981;
-            --accent-warning: #F59E0B;
-            --text-primary: #F9FAFB;
-            --text-secondary: #9CA3AF;
-            --border-color: #374151;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: var(--bg-main);
-            color: var(--text-primary);
-            padding: 2rem;
-            min-height: 100vh;
-        }
-        .header {
-            max-width: 1200px;
-            margin: 0 auto 3rem auto;
-            text-align: center;
-        }
-        .header h1 {
-            font-family: 'Outfit', sans-serif;
-            font-size: 2.75rem;
-            font-weight: 800;
-            background: linear-gradient(135deg, #818CF8 0%, #C084FC 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 0.5rem;
-        }
-        .header p {
-            color: var(--text-secondary);
-            font-size: 1.1rem;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .card {
-            background-color: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            padding: 2rem;
-            margin-bottom: 2rem;
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
-        }
-        .input-group {
-            display: flex;
-            gap: 1rem;
-            margin-top: 1rem;
-        }
-        input[type="text"] {
-            flex: 1;
-            background: #1F2937;
-            border: 1px solid var(--border-color);
-            padding: 1rem 1.25rem;
-            border-radius: 12px;
-            color: #FFF;
-            font-size: 1rem;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-        input[type="text"]:focus {
-            border-color: var(--accent-primary);
-        }
-        button {
-            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
-            color: white;
-            font-weight: 600;
-            padding: 1rem 2rem;
-            border: none;
-            border-radius: 12px;
-            cursor: pointer;
-            font-size: 1rem;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px var(--accent-glow);
-        }
-        .status-box {
-            margin-top: 1.5rem;
-            background: #000;
-            border-radius: 12px;
-            padding: 1rem;
-            font-family: monospace;
-            font-size: 0.9rem;
-            color: #10B981;
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        .clip-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-            gap: 1.5rem;
-            margin-top: 2rem;
-        }
-        .clip-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            padding: 1.5rem;
-            transition: transform 0.2s, border-color 0.2s;
-            position: relative;
-        }
-        .clip-card:hover {
-            transform: translateY(-4px);
-            border-color: var(--accent-primary);
-        }
-        .rank-badge {
-            position: absolute;
-            top: 1rem;
-            right: 1rem;
-            background: linear-gradient(135deg, #6366F1 0%, #A855F7 100%);
-            color: white;
-            font-weight: 700;
-            font-size: 0.85rem;
-            padding: 0.25rem 0.75rem;
-            border-radius: 999px;
-        }
-        .clip-title {
-            font-size: 1.2rem;
-            font-weight: 700;
-            margin-bottom: 0.75rem;
-            padding-right: 4rem;
-        }
-        .timestamp-bar {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            color: var(--accent-warning);
-            font-weight: 600;
-            font-size: 0.9rem;
-            margin-bottom: 1rem;
-        }
-        .hook-box {
-            background: rgba(99, 102, 241, 0.1);
-            border-left: 4px solid var(--accent-primary);
-            padding: 0.75rem 1rem;
-            border-radius: 6px;
-            font-style: italic;
-            margin-bottom: 1rem;
-            font-size: 0.95rem;
-        }
-        .metric-row {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            margin-bottom: 0.5rem;
-        }
-        .metric-val {
-            color: var(--text-primary);
-            font-weight: 600;
-        }
-        .tag {
-            display: inline-block;
-            background: #1F2937;
-            color: #9CA3AF;
-            padding: 0.2rem 0.6rem;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            margin-right: 0.4rem;
-            margin-top: 0.4rem;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Podcast to Shorts</title>
+<style>
+  :root {
+    --bg: #0B0F19; --card: #111827; --line: #374151; --accent: #6366F1;
+    --text: #F9FAFB; --muted: #9CA3AF; --warn: #F59E0B; --err: #EF4444;
+    --ok: #10B981;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text);
+         padding: 2rem 1rem; min-height: 100vh; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 1.9rem; margin-bottom: .3rem; }
+  .sub { color: var(--muted); margin-bottom: 2rem; }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  label { display:block; font-size:.85rem; color: var(--muted); margin-bottom:.4rem; }
+  .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: flex-end; }
+  .row > .grow { flex: 1 1 320px; }
+  input[type=text] { width:100%; background:#1F2937; border:1px solid var(--line);
+    padding:.8rem 1rem; border-radius:10px; color:#fff; font-size:1rem; font-family:inherit; }
+  input[type=text]:focus { outline:none; border-color: var(--accent); }
+  button { background: var(--accent); color:#fff; font-weight:600; padding:.8rem 1.4rem;
+    border:none; border-radius:10px; cursor:pointer; font-size:1rem; font-family:inherit; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .checks { display:flex; gap:1.2rem; margin-top:1rem; font-size:.9rem; color:var(--muted); }
+  .checks label { display:flex; align-items:center; gap:.4rem; margin:0; cursor:pointer; }
+  pre.log { background:#000; border-radius:10px; padding:1rem; margin-top:1rem;
+    font-size:.8rem; line-height:1.5; color:#9CA3AF; max-height:240px; overflow:auto;
+    white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,Consolas,monospace; }
+  .banner { border-radius:10px; padding:.9rem 1.1rem; margin-bottom:1rem; font-size:.9rem;
+            border:1px solid; }
+  .banner.synthetic { background:rgba(245,158,11,.12); border-color:var(--warn); color:#FDE68A; }
+  .banner.heuristic { background:rgba(99,102,241,.12); border-color:var(--accent); color:#C7D2FE; }
+  .banner.error { background:rgba(239,68,68,.12); border-color:var(--err); color:#FECACA; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:1.25rem; }
+  .clip { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:1.25rem; position:relative; }
+  .rank { position:absolute; top:1rem; right:1rem; background:var(--accent); color:#fff;
+          font-size:.75rem; font-weight:700; padding:.2rem .6rem; border-radius:99px; }
+  .clip h3 { font-size:1.05rem; margin-bottom:.5rem; padding-right:3.5rem; line-height:1.35; }
+  .time { color:var(--warn); font-weight:600; font-size:.85rem; margin-bottom:.75rem;
+          font-family:ui-monospace,Consolas,monospace; }
+  .hook { background:rgba(99,102,241,.1); border-left:3px solid var(--accent);
+          padding:.6rem .8rem; border-radius:6px; font-style:italic; font-size:.9rem;
+          margin-bottom:.75rem; }
+  .m { display:flex; justify-content:space-between; font-size:.82rem; color:var(--muted);
+       margin-bottom:.3rem; }
+  .m b { color:var(--text); }
+  .tags { margin-top:.7rem; display:flex; flex-wrap:wrap; gap:.35rem; }
+  .tag { background:#1F2937; color:var(--muted); padding:.15rem .5rem; border-radius:5px;
+         font-size:.72rem; }
+  .foot { border-top:1px solid var(--line); margin-top:.8rem; padding-top:.7rem;
+          font-size:.82rem; color:var(--muted); }
+  ul.warn { margin:.5rem 0 0 1.2rem; font-size:.85rem; color:#FDE68A; }
+</style>
 </head>
 <body>
-    <div class="header">
-        <h1>AI Video Editor for Podcasters</h1>
-        <p>LangGraph Multi-Agent Creative Intelligence Suite for YouTube Shorts, TikTok & Reels</p>
+<div class="wrap">
+  <h1>Podcast to Shorts</h1>
+  <p class="sub">Finds self-contained clips in long-form audio and video, and optionally renders them vertically.</p>
+
+  <div class="card">
+    <div class="row">
+      <div class="grow">
+        <label for="src">YouTube URL or local media path</label>
+        <input type="text" id="src" placeholder="https://www.youtube.com/watch?v=...">
+      </div>
+      <button id="go">Analyse</button>
     </div>
-
-    <div class="container">
-        <div class="card">
-            <h2>Analyze Podcast Episode</h2>
-            <p style="color: var(--text-secondary); margin-top: 0.25rem;">Enter a YouTube URL or path to run 8 LangGraph nodes & 6 specialized AI Editor agents.</p>
-            <div class="input-group">
-                <input type="text" id="sourceUrl" value="https://www.youtube.com/watch?v=sample_podcast_episode" placeholder="Enter YouTube Podcast URL or audio file path...">
-                <button onclick="runPipeline()">Run AI Editor</button>
-            </div>
-            <div id="statusBox" class="status-box" style="display: none;">
-                <div>[Status Log] Pipeline initialized...</div>
-            </div>
-        </div>
-
-        <div id="resultsContainer" style="display: none;">
-            <h2>Publish-Ready Short Video Recommendations</h2>
-            <div id="clipGrid" class="clip-grid"></div>
-        </div>
+    <div class="checks">
+      <label><input type="checkbox" id="demo"> Demo mode (synthetic fixture)</label>
+      <label><input type="checkbox" id="render"> Render MP4s (needs ffmpeg)</label>
     </div>
+    <pre class="log" id="log" hidden></pre>
+  </div>
 
-    <script>
-        async function runPipeline() {
-            const url = document.getElementById('sourceUrl').value;
-            const statusBox = document.getElementById('statusBox');
-            statusBox.style.display = 'block';
-            statusBox.innerHTML = '<div>[System] Starting LangGraph pipeline for: ' + url + '...</div>';
-            
-            try {
-                const res = await fetch('/api/analyze', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ source: url })
-                });
-                const data = await res.json();
-                
-                statusBox.innerHTML += '<div>[Success] Analysis finished! Generated ' + data.clips.length + ' top recommendations.</div>';
-                renderClips(data.clips);
-            } catch(e) {
-                statusBox.innerHTML += '<div style="color: #EF4444;">[Error] Pipeline execution failed: ' + e.message + '</div>';
-            }
-        }
+  <div id="banners"></div>
+  <div class="grid" id="grid"></div>
+</div>
 
-        function renderClips(clips) {
-            const container = document.getElementById('resultsContainer');
-            const grid = document.getElementById('clipGrid');
-            grid.innerHTML = '';
-            container.style.display = 'block';
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go");
+let timer = null;
 
-            clips.forEach(clip => {
-                const card = document.createElement('div');
-                card.className = 'clip-card';
-                card.innerHTML = `
-                    <div class="rank-badge">RANK #${clip.rank}</div>
-                    <div class="clip-title">${clip.title}</div>
-                    <div class="timestamp-bar">
-                        ⏱️ [${clip.start_timestamp} ➔ ${clip.end_timestamp}] (${clip.duration_seconds.toFixed(1)}s)
-                    </div>
-                    <div class="hook-box">
-                        <strong>Hook:</strong> "${clip.hook}"
-                    </div>
-                    <div style="font-size: 0.9rem; margin-bottom: 1rem; color: #D1D5DB;">
-                        <strong>Summary:</strong> ${clip.one_sentence_summary}
-                    </div>
-                    <div class="metric-row">
-                        <span>Virality Score:</span>
-                        <span class="metric-val" style="color: #F59E0B;">${clip.virality_score.toFixed(1)} / 10</span>
-                    </div>
-                    <div class="metric-row">
-                        <span>Confidence Score:</span>
-                        <span class="metric-val" style="color: #10B981;">${clip.confidence_score.toFixed(1)} / 10</span>
-                    </div>
-                    <div class="metric-row">
-                        <span>Retention Prediction:</span>
-                        <span class="metric-val" style="color: #818CF8;">${clip.viewer_retention_prediction}</span>
-                    </div>
-                    <div style="font-size: 0.85rem; color: #9CA3AF; margin-top: 0.75rem; border-top: 1px solid #374151; padding-top: 0.75rem;">
-                        <strong>Why Selected:</strong> ${clip.why_this_clip_was_selected}
-                    </div>
-                    <div style="margin-top: 0.75rem;">
-                        <strong>Thumbnail Text:</strong> "${clip.suggested_thumbnail_text}"
-                    </div>
-                    <div style="margin-top: 0.5rem;">
-                        ${clip.suggested_hashtags.map(tag => `<span class="tag">${tag}</span>`).join('')}
-                    </div>
-                `;
-                grid.appendChild(card);
-            });
-        }
-    </script>
+function logLine(text) {
+  logBox.hidden = false;
+  logBox.textContent += (logBox.textContent ? "\\n" : "") + text;
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  // textContent, never innerHTML: clip text comes from transcripts and video
+  // titles and must never be parsed as markup.
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  return n;
+}
+
+function banner(kind, text) {
+  banners.appendChild(el("div", "banner " + kind, text));
+}
+
+function metric(label, value) {
+  const row = el("div", "m");
+  row.appendChild(el("span", null, label));
+  row.appendChild(el("b", null, value));
+  return row;
+}
+
+function renderClips(data) {
+  banners.replaceChildren();
+  grid.replaceChildren();
+
+  const p = data.provenance || {};
+  if (data.is_synthetic) {
+    banner("synthetic", "Synthetic fixture data - these results do not describe real media. Do not publish them.");
+  }
+  if (p.scoring_mode === "heuristic") {
+    banner("heuristic", "Scored without a language model. Rankings come from measured signals only and are a weak proxy for editorial judgement.");
+  }
+  if (data.warnings && data.warnings.length) {
+    const box = el("div", "banner heuristic", "Warnings:");
+    const ul = el("ul", "warn");
+    data.warnings.forEach(w => ul.appendChild(el("li", null, w)));
+    box.appendChild(ul);
+    banners.appendChild(box);
+  }
+
+  (data.clips || []).forEach(clip => {
+    const card = el("div", "clip");
+    card.appendChild(el("div", "rank", "#" + clip.rank));
+    card.appendChild(el("h3", null, clip.title));
+    card.appendChild(el("div", "time",
+      `${clip.start_timestamp} - ${clip.end_timestamp}  (${Number(clip.duration_seconds).toFixed(1)}s)`));
+
+    const hook = el("div", "hook");
+    hook.appendChild(el("strong", null, "Hook: "));
+    hook.appendChild(document.createTextNode(clip.hook || ""));
+    card.appendChild(hook);
+
+    card.appendChild(metric("Overall", Number(clip.overall_score).toFixed(2) + " / 10"));
+    card.appendChild(metric("Virality", Number(clip.virality_score).toFixed(2) + " / 10"));
+    card.appendChild(metric("Confidence", Number(clip.confidence_score).toFixed(2) + " / 10"));
+    card.appendChild(metric("Retention", clip.viewer_retention_prediction));
+    card.appendChild(metric("Cut adjust",
+      `${Number(clip.start_adjustment_sec).toFixed(2)}s / +${Number(clip.end_adjustment_sec).toFixed(2)}s`));
+
+    const foot = el("div", "foot");
+    foot.appendChild(el("div", null, clip.one_sentence_summary));
+    foot.appendChild(el("div", null, "Why: " + (clip.why_this_clip_was_selected || "")));
+    if (clip.rendered_file_path) {
+      foot.appendChild(el("div", null, "Rendered: " + clip.rendered_file_path));
+    }
+    card.appendChild(foot);
+
+    const tags = el("div", "tags");
+    (clip.suggested_hashtags || []).forEach(t => tags.appendChild(el("span", "tag", t)));
+    card.appendChild(tags);
+
+    grid.appendChild(card);
+  });
+}
+
+async function poll(jobId, seenLogs) {
+  let res;
+  try {
+    res = await fetch("/api/status?job_id=" + encodeURIComponent(jobId));
+  } catch (e) {
+    logLine("[error] lost connection: " + e.message);
+    clearInterval(timer); goBtn.disabled = false;
+    return seenLogs;
+  }
+  const data = await res.json();
+  (data.logs || []).slice(seenLogs).forEach(logLine);
+  const count = (data.logs || []).length;
+
+  if (data.status === "running") return count;
+
+  clearInterval(timer);
+  timer = null;
+  goBtn.disabled = false;
+
+  if (data.status === "error") {
+    banners.replaceChildren();
+    banner("error", "Failed at stage '" + (data.failed_stage || "unknown") + "': " + data.error);
+    if (data.warnings && data.warnings.length) {
+      const box = el("div", "banner heuristic", "Warnings:");
+      const ul = el("ul", "warn");
+      data.warnings.forEach(w => ul.appendChild(el("li", null, w)));
+      box.appendChild(ul); banners.appendChild(box);
+    }
+  } else {
+    logLine("[done] " + (data.clips || []).length + " clips");
+    renderClips(data);
+  }
+  return count;
+}
+
+goBtn.addEventListener("click", async () => {
+  const source = $("src").value.trim();
+  const demo = $("demo").checked;
+  if (!source && !demo) {
+    alert("Enter a URL or path, or tick demo mode.");
+    return;
+  }
+  goBtn.disabled = true;
+  logBox.textContent = "";
+  banners.replaceChildren();
+  grid.replaceChildren();
+  logLine("[start] " + (demo ? "demo mode" : source));
+
+  let started;
+  try {
+    const res = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source, demo, render: $("render").checked }),
+    });
+    started = await res.json();
+    if (!res.ok) throw new Error(started.error || res.statusText);
+  } catch (e) {
+    logLine("[error] " + e.message);
+    goBtn.disabled = false;
+    return;
+  }
+
+  let seen = 0;
+  timer = setInterval(async () => { seen = await poll(started.job_id, seen); }, 800);
+});
+</script>
 </body>
 </html>
 """
 
+
+def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
+    """Worker thread: run the pipeline and store the result."""
+    from src.graph.workflow import VideoEditorPipeline
+
+    def set_state(**fields) -> None:
+        with _jobs_lock:
+            _jobs[job_id].update(fields)
+
+    try:
+        pipeline = VideoEditorPipeline()
+        state = pipeline.run(source, demo_mode=demo, render=render, thread_id=job_id)
+        provenance = state.provenance()
+        if state.error:
+            set_state(
+                status="error",
+                error=state.error,
+                failed_stage=state.failed_stage,
+                logs=list(state.logs),
+                warnings=list(state.warnings),
+            )
+            return
+        set_state(
+            status="done",
+            logs=list(state.logs),
+            warnings=list(state.warnings),
+            title=state.podcast_title,
+            provenance=provenance.model_dump(mode="json"),
+            is_synthetic=provenance.is_synthetic,
+            clips=[c.model_dump(mode="json") for c in state.final_clips],
+        )
+    except Exception as exc:  # a worker crash must not kill the server
+        log.exception("Job %s crashed", job_id)
+        set_state(
+            status="error",
+            error=f"{type(exc).__name__}: {exc}",
+            failed_stage="server",
+        )
+
+
 class RequestHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/" or self.path.startswith("/index"):
-            self.send_response(200)
+    server_version = "PodcastShorts/2.0"
+
+    def log_message(self, fmt: str, *args) -> None:  # route through logging
+        log.debug("%s - %s", self.address_string(), fmt % args)
+
+    # ------------------------------------------------------------ helpers
+
+    def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self) -> dict:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise ValueError("Content-Length header is required")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise ValueError("Content-Length is not an integer") from exc
+        if length < 0:
+            raise ValueError("Content-Length is negative")
+        # Bounded read: the original trusted the header and read whatever it said.
+        if length > settings.max_request_bytes:
+            raise ValueError(
+                f"Request body too large ({length} > {settings.max_request_bytes} bytes)"
+            )
+        if length == 0:
+            return {}
+        body = self.rfile.read(length)
+        parsed = json.loads(body.decode("utf-8"))
+        if not isinstance(parsed, dict):
+            raise ValueError("Request body must be a JSON object")
+        return parsed
+
+    # --------------------------------------------------------------- GET
+
+    def do_GET(self) -> None:
+        route = urlparse(self.path)
+        if route.path in ("/", "/index.html"):
+            body = HTML_PAGE.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
-        else:
-            self.send_error(404, "File Not Found")
+            self.wfile.write(body)
+            return
 
-    def do_POST(self):
-        if self.path == "/api/analyze":
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length)
-            payload = json.loads(body.decode("utf-8")) if body else {}
-            
-            source = payload.get("source", "https://www.youtube.com/watch?v=sample_podcast")
-            pipeline = VideoEditorPipeline()
-            final_state = pipeline.run(source)
-            
-            clips_data = [clip.model_dump() for clip in final_state.final_clips]
-            response_payload = {
-                "status": "success",
-                "title": final_state.podcast_title,
-                "logs": final_state.logs,
-                "clips": clips_data
-            }
-            
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(response_payload).encode("utf-8"))
-        else:
-            self.send_error(404, "Endpoint Not Found")
+        if route.path == "/health":
+            self._send_json({
+                "status": "ok",
+                "scoring_mode": "llm" if settings.uses_llm else "heuristic",
+                "embedding_backend": settings.embedding_backend,
+            })
+            return
 
-def run_server(port: int = 5050):
-    server_address = ("127.0.0.1", port)
-    httpd = HTTPServer(server_address, RequestHandler)
-    print(f"[SERVER] AI Video Editor Web Dashboard running at: http://127.0.0.1:{port}")
-    httpd.serve_forever()
+        if route.path == "/api/status":
+            job_ids = parse_qs(route.query).get("job_id", [])
+            if not job_ids:
+                self._send_json({"error": "job_id is required"}, HTTPStatus.BAD_REQUEST)
+                return
+            with _jobs_lock:
+                job = _jobs.get(job_ids[0])
+                snapshot = dict(job) if job else None
+            if snapshot is None:
+                self._send_json({"error": "unknown job_id"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(snapshot)
+            return
+
+        self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    # -------------------------------------------------------------- POST
+
+    def do_POST(self) -> None:
+        route = urlparse(self.path)
+        if route.path != "/api/analyze":
+            self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            payload = self._read_json_body()
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except json.JSONDecodeError as exc:
+            self._send_json({"error": f"malformed JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:
+            log.exception("Failed reading request body")
+            self._send_json(
+                {"error": f"{type(exc).__name__}: {exc}"},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
+
+        source = str(payload.get("source") or "").strip()
+        demo = bool(payload.get("demo"))
+        render = bool(payload.get("render"))
+        if not source and not demo:
+            self._send_json(
+                {"error": "Provide 'source', or set 'demo' to true."},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        job_id = uuid.uuid4().hex[:16]
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "running", "logs": [], "warnings": []}
+
+        # Analysis can take minutes; run it off the request thread so the
+        # server stays responsive.
+        threading.Thread(
+            target=_run_job, args=(job_id, source, demo, render), daemon=True
+        ).start()
+        self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
+
+
+def run_server(host: str | None = None, port: int | None = None) -> None:
+    setup_logging(settings.log_level)
+    settings.ensure_directories()
+    host = host or settings.server_host
+    port = port or settings.server_port
+    server = ThreadingHTTPServer((host, port), RequestHandler)
+    server.daemon_threads = True
+    log.info("Dashboard on http://%s:%d", host, port)
+    print(f"Dashboard: http://{host}:{port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down.")
+    finally:
+        server.server_close()
+
 
 if __name__ == "__main__":
-    port = 8000
-    if len(sys.argv) > 1 and sys.argv[1].isdigit():
-        port = int(sys.argv[1])
-    run_server(port)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Podcast to Shorts web dashboard")
+    parser.add_argument("--host", default=settings.server_host)
+    parser.add_argument("--port", type=int, default=settings.server_port)
+    cli_args = parser.parse_args()
+    run_server(cli_args.host, cli_args.port)

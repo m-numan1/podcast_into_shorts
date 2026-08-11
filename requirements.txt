@@ -1,13 +1,38 @@
-pydantic>=2.0.0
-langgraph>=0.1.0
-langchain>=0.2.0
-langchain-core>=0.2.0
-langchain-community>=0.2.0
-faiss-cpu>=1.7.4
-numpy>=1.24.0
-yt-dlp>=2024.0.0
-python-dotenv>=1.0.0
-requests>=2.31.0
-youtube-transcript-api>=0.6.0
-langchain-google-genai>=1.0.0
-openai-whisper
+# Core runtime dependencies.
+#
+# SYSTEM REQUIREMENT: ffmpeg and ffprobe must be on PATH. They are used for
+# audio extraction, duration probing, silence detection and clip rendering.
+#   Windows        winget install Gyan.FFmpeg
+#   macOS          brew install ffmpeg
+#   Debian/Ubuntu  sudo apt install ffmpeg
+#
+# Local Whisper transcription is optional and pulls ~2 GB of PyTorch; it lives
+# in requirements-ml.txt. Without it, transcription needs a YouTube URL that
+# has captions.
+#
+# Upper bounds are pinned because langgraph and langchain both make breaking
+# changes in minor releases.
+
+pydantic>=2.7,<3.0
+pydantic-settings>=2.2,<3.0
+
+langgraph>=0.2,<0.7
+langgraph-checkpoint-sqlite>=2.0,<3.0   # resumable runs; falls back to memory
+
+numpy>=1.24,<3.0
+python-dotenv>=1.0,<2.0
+
+yt-dlp>=2024.8.6                        # no upper bound: needs to stay current
+youtube-transcript-api>=0.6,<2.0
+
+# --- Optional, imported lazily. Install only the provider you use. ---
+# LLM scoring and packaging (node 8/9). Without one of these the pipeline runs
+# in heuristic mode, which is a declared mode, not a silent fallback.
+langchain-core>=0.3,<0.4
+langchain-openai>=0.2,<0.4              # was MISSING while llm.py imported it
+langchain-google-genai>=2.0,<3.0
+
+# Approximate nearest-neighbour search. Optional: the vector store falls back
+# to a NumPy matmul, which is fast enough for the chunk counts an episode
+# produces. Omit if no wheel exists for your Python version.
+faiss-cpu>=1.8,<2.0 ; python_version < "3.13"
