@@ -1,0 +1,26 @@
+[project]
+name = "podcast-into-shorts"
+version = "0.2.0"
+description = "Find and render short vertical clips from long-form podcasts and interviews."
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+# rootdir on sys.path, so `pytest` works without setting PYTHONPATH.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:src.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",    # long lines are handled by the formatter
+    "B008",    # Field(...) in defaults is the pydantic idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

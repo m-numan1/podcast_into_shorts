@@ -1,0 +1,54 @@
+{
+  "_comment": "SYNTHETIC FIXTURE. Reachable only via --demo. Any output built from this file is stamped transcript_source='fixture' and is not an analysis of real media. This data previously lived inside src/providers/transcriber.py and was returned silently whenever transcription failed, which made failed runs look successful.",
+  "title": "Tech Insights (demo fixture)",
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 12.0,
+      "speaker": "Speaker_A",
+      "text": "Welcome back to Tech Insights. Today we're diving deep into why 99% of AI startups fail within their first six months."
+    },
+    {
+      "start": 12.5,
+      "end": 38.0,
+      "speaker": "Speaker_B",
+      "text": "The truth is, most founders spend 90% of their time building wrappers around APIs without solving a core human pain point. When OpenAI updates a model, their entire business vanishes overnight."
+    },
+    {
+      "start": 38.5,
+      "end": 65.0,
+      "speaker": "Speaker_A",
+      "text": "That is a terrifying reality. Can you share a concrete example of a company that actually built an unshakeable moat?"
+    },
+    {
+      "start": 65.5,
+      "end": 110.0,
+      "speaker": "Speaker_B",
+      "text": "Absolutely. Look at company X. Instead of focusing on raw text generation, they integrated directly into complex enterprise workflows. They built unique proprietary data flywheels that get smarter with every single user interaction. You cannot copy that with a single prompt."
+    },
+    {
+      "start": 110.5,
+      "end": 135.0,
+      "speaker": "Speaker_A",
+      "text": "Wait, so what is the exact formula for a young developer listening right now who wants to build something enduring?"
+    },
+    {
+      "start": 135.5,
+      "end": 190.0,
+      "speaker": "Speaker_B",
+      "text": "Rule number one: Stop chasing shiny technology. Find a boring, painful, high-friction workflow in legal, healthcare, or logistics. Automate 80% of it, keep a human in the loop for the critical 20%, and sell outcome rather than software seats."
+    },
+    {
+      "start": 190.5,
+      "end": 230.0,
+      "speaker": "Speaker_A",
+      "text": "That is incredible advice. People forget that utility always beats novelty in the long run."
+    },
+    {
+      "start": 230.5,
+      "end": 280.0,
+      "speaker": "Speaker_B",
+      "text": "Precisely! Novelty lasts three weeks. Utility builds billion-dollar enterprise value that lasts decades."
+    }
+  ]
+}

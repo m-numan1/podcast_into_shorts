@@ -1,26 +1,32 @@
-from src.schema.state import EditorState
-from src.providers.audio import AudioProcessorProvider
+"""Node 2: extract 16 kHz mono audio for transcription."""
 
-def node_02_audio(state: EditorState) -> dict:
-    """
-    Node 2: Extract audio stream for downstream transcription & acoustic feature extraction.
-    """
-    if not state.media_file_path:
+from __future__ import annotations
+
+from typing import Any
+
+from src.errors import AudioExtractionError
+from src.nodes._base import pipeline_node
+from src.providers.audio import AudioProcessorProvider
+from src.schema.state import EditorState
+
+
+@pipeline_node(stage="audio", label="Node 2 Audio")
+def node_02_audio(state: EditorState) -> dict[str, Any]:
+    if state.demo_mode:
         return {
-            "error": "No media file path found in state for Node 2.",
-            "logs": state.logs + ["[Node 2] ERROR: No media file path found."]
+            "current_node": "NODE_02_SKIPPED_DEMO",
+            "logs": ["[Node 2 Audio] DEMO MODE: no audio to extract."],
         }
-        
-    logs = list(state.logs)
-    logs.append(f"[Node 2] Extracting audio stream from {state.media_file_path}")
-    
-    audio_provider = AudioProcessorProvider()
-    extracted_audio = audio_provider.extract_audio(state.media_file_path)
-    
-    logs.append(f"[Node 2] Audio stream ready at: {extracted_audio}")
-    
+
+    if not state.media_file_path:
+        raise AudioExtractionError(
+            "No media file available to extract audio from.",
+            "Node 1 did not produce a file; check the download stage.",
+        )
+
+    audio_path = AudioProcessorProvider().extract_audio(state.media_file_path)
     return {
-        "audio_file_path": extracted_audio,
+        "audio_file_path": audio_path,
         "current_node": "NODE_02_AUDIO_COMPLETE",
-        "logs": logs
+        "logs": [f"[Node 2 Audio] extracted to {audio_path}"],
     }
