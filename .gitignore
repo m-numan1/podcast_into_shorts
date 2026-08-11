@@ -1,0 +1,75 @@
+# ---- Secrets ----
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---- Test / coverage / type caches ----
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# ---- Project runtime artifacts ----
+# Downloaded media, extracted audio, whisper models, FAISS indexes
+cache/
+outputs/
+renders/
+checkpoints/
+*.sqlite
+*.sqlite3
+
+# ---- Media files (never commit source or rendered media) ----
+*.mp3
+*.mp4
+*.wav
+*.m4a
+*.webm
+*.mkv
+*.mov
+*.flac
+*.opus
+*.srt
+*.vtt
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Logs ----
+*.log
+logs/
