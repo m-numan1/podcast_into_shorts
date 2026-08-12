@@ -11,6 +11,9 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 filterwarnings = ["error::DeprecationWarning:src.*"]
 
+[tool.pyright]
+extraPaths = ["."]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from config.settings import settings
@@ -132,7 +133,16 @@ class MediaDownloaderProvider:
             "ignoreerrors": False,
             "noplaylist": True,
             "retries": 3,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["mweb", "android", "web"]
+                }
+            },
         }
+        if getattr(settings, "ytdlp_cookies_from_browser", None):
+            ydl_opts["cookiesfrombrowser"] = settings.ytdlp_cookies_from_browser
+        if getattr(settings, "ytdlp_cookies_file", None):
+            ydl_opts["cookiefile"] = str(settings.ytdlp_cookies_file)
 
         log.info("Downloading %s", url)
         try:
@@ -188,7 +198,7 @@ class MediaDownloaderProvider:
         )
 
     @staticmethod
-    def _resolve_downloaded_path(ydl, info: dict) -> Path:
+    def _resolve_downloaded_path(ydl: Any, info: Any) -> Path:
         """Find the file yt-dlp actually wrote.
 
         `requested_downloads[].filepath` is authoritative post-processing;

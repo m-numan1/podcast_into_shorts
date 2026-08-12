@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     render_dir: Path = BASE_DIR / "renders"
     checkpoint_dir: Path = BASE_DIR / "checkpoints"
 
+    # ---- Download ----
+    ytdlp_cookies_from_browser: str | None = None
+    ytdlp_cookies_file: Path | str | None = None
+
     # ---- LLM ----
     openai_api_key: str = ""
     gemini_api_key: str = ""
@@ -56,7 +60,7 @@ class Settings(BaseSettings):
     # never a silent fallback. Output is stamped with scoring_mode="heuristic".
     default_llm_provider: LLMProviderName = "heuristic"
     default_model: str = "gpt-4o-mini"
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
     llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     llm_max_retries: int = Field(default=3, ge=0, le=10)
     llm_timeout_sec: float = Field(default=60.0, gt=0)
