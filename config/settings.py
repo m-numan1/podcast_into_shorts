@@ -118,8 +118,11 @@ class Settings(BaseSettings):
     # "blur_pad" keeps the whole 16:9 frame visible against a blurred fill;
     # "crop" fills the frame but can cut faces out of an interview shot.
     render_mode: Literal["blur_pad", "crop"] = "blur_pad"
+    # Fast trim uses ffmpeg stream copy (-c copy) for instant clip cutting.
+    fast_trim_mode: bool = True
     # Cap renders per run; encoding is by far the slowest stage.
     render_max_clips: int = Field(default=5, ge=1, le=100)
+
     render_crf: int = Field(default=20, ge=0, le=51)
     render_preset: str = "medium"
     render_burn_captions: bool = True
