@@ -89,7 +89,7 @@ class Settings(BaseSettings):
 
     # ---- Clip constraints ----
     target_clip_count_min: int = Field(default=5, ge=1)
-    target_clip_count_max: int = Field(default=20, ge=1)
+    target_clip_count_max: int = Field(default=15, ge=1)
     min_clip_duration_sec: float = Field(default=15.0, gt=0)
     max_clip_duration_sec: float = Field(default=90.0, gt=0)
     optimal_clip_duration_sec: float = Field(default=45.0, gt=0)
@@ -138,7 +138,8 @@ class Settings(BaseSettings):
     # ---- Web ----
     server_host: str = "127.0.0.1"
     server_port: int = 8000
-    max_request_bytes: int = 64 * 1024
+    max_request_bytes: int = 10 * 1024 * 1024
+
 
     @model_validator(mode="after")
     def _derive_and_check(self) -> "Settings":

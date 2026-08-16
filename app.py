@@ -291,7 +291,7 @@ trimAllBtn.addEventListener("click", async () => {
     banner("error", "No JSON clips available to render.");
     return;
   }
-  const source = $("src").value.trim();
+  const source = $("src").value.trim() || (lastResult && (lastResult.source || lastResult.media_file_path)) || "";
   trimAllBtn.disabled = true;
   logLine("[start batch trim] cutting " + lastResult.clips.length + " clips from JSON...");
 
@@ -376,6 +376,8 @@ def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
             provenance=provenance.model_dump(mode="json"),
             is_synthetic=provenance.is_synthetic,
             clips=[c.model_dump(mode="json") for c in state.final_clips],
+            media_file_path=state.media_file_path,
+            source=state.source,
         )
         log.info("Pipeline job %s completed with %d clips", job_id, len(state.final_clips))
     except Exception as exc:  # a worker crash must not kill the server
