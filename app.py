@@ -22,7 +22,7 @@ import threading
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from config.settings import settings
 from src.utils.logging_config import get_logger, setup_logging
@@ -92,6 +92,10 @@ HTML_PAGE = """<!DOCTYPE html>
   .foot { border-top:1px solid var(--line); margin-top:.8rem; padding-top:.7rem;
           font-size:.82rem; color:var(--muted); }
   ul.warn { margin:.5rem 0 0 1.2rem; font-size:.85rem; color:#FDE68A; }
+  .video-wrap { margin: .8rem 0 1rem; border-radius: 10px; overflow: hidden; background: #000; display: flex; flex-direction: column; gap: .5rem; padding: .5rem; border: 1px solid var(--line); }
+  .clip-video { width: 100%; max-height: 420px; outline: none; background: #000; border-radius: 8px; }
+  .dl-btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; background: var(--ok); color: #fff; text-decoration: none; font-size: .85rem; font-weight: 600; padding: .5rem 1rem; border-radius: 8px; text-align: center; }
+  .dl-btn:hover { opacity: .9; }
 </style>
 </head>
 <body>
@@ -192,6 +196,27 @@ function renderClips(data) {
     hook.appendChild(el("strong", null, "Hook: "));
     hook.appendChild(document.createTextNode(clip.hook || ""));
     card.appendChild(hook);
+
+    if (clip.rendered_file_path) {
+      const parts = clip.rendered_file_path.split(/[\\\\/]/);
+      const filename = parts[parts.length - 1];
+      if (filename) {
+        const videoWrap = el("div", "video-wrap");
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.className = "clip-video";
+        video.src = "/renders/" + encodeURIComponent(filename);
+        videoWrap.appendChild(video);
+
+        const dlBtn = el("a", "dl-btn", "⬇ Download Short (MP4)");
+        dlBtn.href = "/renders/" + encodeURIComponent(filename);
+        dlBtn.setAttribute("download", filename);
+        videoWrap.appendChild(dlBtn);
+
+        card.appendChild(videoWrap);
+      }
+    }
 
     card.appendChild(metric("Overall", Number(clip.overall_score).toFixed(2) + " / 10"));
     card.appendChild(metric("Virality", Number(clip.virality_score).toFixed(2) + " / 10"));
@@ -507,6 +532,57 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(snapshot)
             return
+
+        if route.path.startswith("/renders/"):
+            raw_name = route.path[len("/renders/"):]
+            filename = unquote(raw_name)
+            render_root = settings.render_dir.resolve()
+            file_path = (settings.render_dir / filename).resolve()
+            if render_root not in file_path.parents and file_path != render_root:
+                self._send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+            if not file_path.exists() or not file_path.is_file():
+                self._send_json({"error": "file not found"}, HTTPStatus.NOT_FOUND)
+                return
+
+            try:
+                stat = file_path.stat()
+                file_size = stat.st_size
+                ext = file_path.suffix.lower()
+                mime_type = "video/mp4" if ext == ".mp4" else "video/webm" if ext == ".webm" else "application/octet-stream"
+
+                range_header = self.headers.get("Range")
+                if range_header and range_header.startswith("bytes="):
+                    ranges = range_header.replace("bytes=", "").split("-")
+                    start = int(ranges[0]) if ranges[0] else 0
+                    end = int(ranges[1]) if len(ranges) > 1 and ranges[1] else file_size - 1
+                    end = min(end, file_size - 1)
+                    length = max(0, end - start + 1)
+
+                    self.send_response(HTTPStatus.PARTIAL_CONTENT)
+                    self.send_header("Content-Type", mime_type)
+                    self.send_header("Content-Length", str(length))
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers()
+
+                    with open(file_path, "rb") as f:
+                        f.seek(start)
+                        self.wfile.write(f.read(length))
+                    return
+
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mime_type)
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                with open(file_path, "rb") as f:
+                    while chunk := f.read(65536):
+                        self.wfile.write(chunk)
+                return
+            except Exception as exc:
+                log.exception("Error serving render file %s: %s", filename, exc)
+                return
 
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
