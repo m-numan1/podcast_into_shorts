@@ -1,13 +1,16 @@
-from src.providers.downloader import MediaDownloaderProvider
-from src.providers.audio import AudioProcessorProvider
-from src.providers.transcriber import TranscriberProvider
-from src.providers.vectorstore import VectorStoreProvider
-from src.providers.llm import LLMProvider
+from .downloader import MediaDownloaderProvider
+from .audio import AudioProcessorProvider
+from .transcriber import TranscriberProvider
+from .vectorstore import VectorStoreProvider
+from .llm import LLMProvider
+from .trimmer import ClipTrimmer
 
 __all__ = [
     "MediaDownloaderProvider",
     "AudioProcessorProvider",
     "TranscriberProvider",
     "VectorStoreProvider",
-    "LLMProvider"
+    "LLMProvider",
+    "ClipTrimmer",
 ]
+

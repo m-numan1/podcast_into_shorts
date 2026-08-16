@@ -22,7 +22,7 @@ import threading
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from config.settings import settings
 from src.utils.logging_config import get_logger, setup_logging
@@ -92,6 +92,10 @@ HTML_PAGE = """<!DOCTYPE html>
   .foot { border-top:1px solid var(--line); margin-top:.8rem; padding-top:.7rem;
           font-size:.82rem; color:var(--muted); }
   ul.warn { margin:.5rem 0 0 1.2rem; font-size:.85rem; color:#FDE68A; }
+  .video-wrap { margin: .8rem 0 1rem; border-radius: 10px; overflow: hidden; background: #000; display: flex; flex-direction: column; gap: .5rem; padding: .5rem; border: 1px solid var(--line); }
+  .clip-video { width: 100%; max-height: 420px; outline: none; background: #000; border-radius: 8px; }
+  .dl-btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; background: var(--ok); color: #fff; text-decoration: none; font-size: .85rem; font-weight: 600; padding: .5rem 1rem; border-radius: 8px; text-align: center; }
+  .dl-btn:hover { opacity: .9; }
 </style>
 </head>
 <body>
@@ -105,30 +109,35 @@ HTML_PAGE = """<!DOCTYPE html>
         <label for="src">YouTube URL or local media path</label>
         <input type="text" id="src" placeholder="https://www.youtube.com/watch?v=...">
       </div>
-      <button id="go">Analyse</button>
+      <button type="button" id="go">Analyse</button>
     </div>
     <div class="checks">
       <label><input type="checkbox" id="demo"> Demo mode (synthetic fixture)</label>
       <label><input type="checkbox" id="render"> Render MP4s (needs ffmpeg)</label>
+      <label><input type="checkbox" id="fastCut" checked> Fast Cut (-c copy, instant)</label>
     </div>
     <pre class="log" id="log" hidden></pre>
   </div>
 
   <div id="banners"></div>
+  <button type="button" id="trimAll" style="display:none; background: var(--ok); color: #fff; font-weight:700; padding: .8rem 1.4rem; border:none; border-radius:10px; cursor:pointer; margin-bottom:1.5rem; font-size:1rem; font-family:inherit;">Render All Shorts from JSON</button>
   <div class="grid" id="grid"></div>
 </div>
 
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go");
+const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go"), trimAllBtn = $("trimAll");
 let timer = null;
+let lastResult = null;
 
 function logLine(text) {
   logBox.hidden = false;
-  logBox.textContent += (logBox.textContent ? "\\n" : "") + text;
+  logBox.textContent += (logBox.textContent ? String.fromCharCode(10) : "") + text;
   logBox.scrollTop = logBox.scrollHeight;
 }
+
+
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -151,8 +160,15 @@ function metric(label, value) {
 }
 
 function renderClips(data) {
+  lastResult = data;
   banners.replaceChildren();
   grid.replaceChildren();
+
+  if (data.clips && data.clips.length) {
+    trimAllBtn.style.display = "inline-block";
+  } else {
+    trimAllBtn.style.display = "none";
+  }
 
   const p = data.provenance || {};
   if (data.is_synthetic) {
@@ -180,6 +196,27 @@ function renderClips(data) {
     hook.appendChild(el("strong", null, "Hook: "));
     hook.appendChild(document.createTextNode(clip.hook || ""));
     card.appendChild(hook);
+
+    if (clip.rendered_file_path) {
+      const parts = clip.rendered_file_path.split(/[\\\\/]/);
+      const filename = parts[parts.length - 1];
+      if (filename) {
+        const videoWrap = el("div", "video-wrap");
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.className = "clip-video";
+        video.src = "/renders/" + encodeURIComponent(filename);
+        videoWrap.appendChild(video);
+
+        const dlBtn = el("a", "dl-btn", "⬇ Download Short (MP4)");
+        dlBtn.href = "/renders/" + encodeURIComponent(filename);
+        dlBtn.setAttribute("download", filename);
+        videoWrap.appendChild(dlBtn);
+
+        card.appendChild(videoWrap);
+      }
+    }
 
     card.appendChild(metric("Overall", Number(clip.overall_score).toFixed(2) + " / 10"));
     card.appendChild(metric("Virality", Number(clip.virality_score).toFixed(2) + " / 10"));
@@ -210,7 +247,7 @@ async function poll(jobId, seenLogs) {
     res = await fetch("/api/status?job_id=" + encodeURIComponent(jobId));
   } catch (e) {
     logLine("[error] lost connection: " + e.message);
-    clearInterval(timer); goBtn.disabled = false;
+    clearInterval(timer); goBtn.disabled = false; trimAllBtn.disabled = false;
     return seenLogs;
   }
   const data = await res.json();
@@ -222,6 +259,7 @@ async function poll(jobId, seenLogs) {
   clearInterval(timer);
   timer = null;
   goBtn.disabled = false;
+  trimAllBtn.disabled = false;
 
   if (data.status === "error") {
     banners.replaceChildren();
@@ -233,7 +271,7 @@ async function poll(jobId, seenLogs) {
       box.appendChild(ul); banners.appendChild(box);
     }
   } else {
-    logLine("[done] " + (data.clips || []).length + " clips");
+    logLine("[done] " + (data.clips || []).length + " clips processed");
     renderClips(data);
   }
   return count;
@@ -242,14 +280,16 @@ async function poll(jobId, seenLogs) {
 goBtn.addEventListener("click", async () => {
   const source = $("src").value.trim();
   const demo = $("demo").checked;
-  if (!source && !demo) {
-    alert("Enter a URL or path, or tick demo mode.");
-    return;
-  }
-  goBtn.disabled = true;
-  logBox.textContent = "";
   banners.replaceChildren();
   grid.replaceChildren();
+
+  if (!source && !demo) {
+    banner("error", "Please enter a YouTube URL / local file path, or check 'Demo mode'.");
+    return;
+  }
+
+  goBtn.disabled = true;
+  logBox.textContent = "";
   logLine("[start] " + (demo ? "demo mode" : source));
 
   let started;
@@ -270,21 +310,79 @@ goBtn.addEventListener("click", async () => {
   let seen = 0;
   timer = setInterval(async () => { seen = await poll(started.job_id, seen); }, 800);
 });
+
+trimAllBtn.addEventListener("click", async () => {
+  if (!lastResult || !lastResult.clips || !lastResult.clips.length) {
+    banner("error", "No JSON clips available to render.");
+    return;
+  }
+  const source = $("src").value.trim() || (lastResult && (lastResult.source || lastResult.media_file_path)) || "";
+  trimAllBtn.disabled = true;
+  logLine("[start batch trim] cutting " + lastResult.clips.length + " clips from JSON...");
+
+  let started;
+  try {
+    const res = await fetch("/api/trim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source: source,
+        clips: lastResult.clips,
+        fast: $("fastCut").checked,
+      }),
+    });
+    started = await res.json();
+    if (!res.ok) throw new Error(started.error || res.statusText);
+  } catch (e) {
+    logLine("[trim error] " + e.message);
+    trimAllBtn.disabled = false;
+    return;
+  }
+
+  let seen = 0;
+  timer = setInterval(async () => { seen = await poll(started.job_id, seen); }, 800);
+});
 </script>
 </body>
 </html>
 """
 
 
+import logging
+
+
+class ThreadJobLogHandler(logging.Handler):
+    """Custom logging handler that streams logs to _jobs[job_id]['logs'] in real-time."""
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__()
+        self.job_id = job_id
+        self.formatter = logging.Formatter("%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            with _jobs_lock:
+                if self.job_id in _jobs:
+                    _jobs[self.job_id]["logs"].append(msg)
+        except Exception:
+            self.handleError(record)
+
+
 def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
     """Worker thread: run the pipeline and store the result."""
     from src.graph.workflow import VideoEditorPipeline
+
+    handler = ThreadJobLogHandler(job_id)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
 
     def set_state(**fields) -> None:
         with _jobs_lock:
             _jobs[job_id].update(fields)
 
     try:
+        log.info("Starting pipeline analysis job %s (source=%r, demo=%s, render=%s)", job_id, source, demo, render)
         pipeline = VideoEditorPipeline()
         state = pipeline.run(source, demo_mode=demo, render=render, thread_id=job_id)
         provenance = state.provenance()
@@ -293,19 +391,20 @@ def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
                 status="error",
                 error=state.error,
                 failed_stage=state.failed_stage,
-                logs=list(state.logs),
                 warnings=list(state.warnings),
             )
             return
         set_state(
             status="done",
-            logs=list(state.logs),
             warnings=list(state.warnings),
             title=state.podcast_title,
             provenance=provenance.model_dump(mode="json"),
             is_synthetic=provenance.is_synthetic,
             clips=[c.model_dump(mode="json") for c in state.final_clips],
+            media_file_path=state.media_file_path,
+            source=state.source,
         )
+        log.info("Pipeline job %s completed with %d clips", job_id, len(state.final_clips))
     except Exception as exc:  # a worker crash must not kill the server
         log.exception("Job %s crashed", job_id)
         set_state(
@@ -313,13 +412,57 @@ def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
             error=f"{type(exc).__name__}: {exc}",
             failed_stage="server",
         )
+    finally:
+        root_logger.removeHandler(handler)
+
+
+def _run_trim_job(job_id: str, source: str, clips: list[dict], fast_mode: bool) -> None:
+    """Worker thread: batch trim clips directly from JSON timestamps."""
+    from src.providers.trimmer import ClipTrimmer
+
+    handler = ThreadJobLogHandler(job_id)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+
+    def set_state(**fields) -> None:
+        with _jobs_lock:
+            _jobs[job_id].update(fields)
+
+    try:
+        log.info("Starting trim job %s for %d clips (fast=%s)", job_id, len(clips), fast_mode)
+        trimmer = ClipTrimmer()
+        media_path = source
+        if not media_path and (settings.cache_dir / "synthetic_demo.mp4").exists():
+            media_path = str(settings.cache_dir / "synthetic_demo.mp4")
+
+        rendered = trimmer.trim_all_from_json(
+            media_path=media_path,
+            json_input=clips,
+            fast_mode=fast_mode,
+        )
+        log.info("Trim job %s complete: cut %d clip(s)", job_id, len(rendered))
+        set_state(
+            status="done",
+            clips=rendered,
+        )
+    except Exception as exc:
+        log.exception("Trim job %s failed", job_id)
+        set_state(
+            status="error",
+            error=f"{type(exc).__name__}: {exc}",
+            failed_stage="trimmer",
+        )
+    finally:
+        root_logger.removeHandler(handler)
+
 
 
 class RequestHandler(BaseHTTPRequestHandler):
     server_version = "PodcastShorts/2.0"
 
-    def log_message(self, fmt: str, *args) -> None:  # route through logging
-        log.debug("%s - %s", self.address_string(), fmt % args)
+    def log_message(self, format: str, *args) -> None:  # route through logging
+        log.debug("%s - %s", self.address_string(), format % args)
+
 
     # ------------------------------------------------------------ helpers
 
@@ -390,13 +533,64 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(snapshot)
             return
 
+        if route.path.startswith("/renders/"):
+            raw_name = route.path[len("/renders/"):]
+            filename = unquote(raw_name)
+            render_root = settings.render_dir.resolve()
+            file_path = (settings.render_dir / filename).resolve()
+            if render_root not in file_path.parents and file_path != render_root:
+                self._send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+            if not file_path.exists() or not file_path.is_file():
+                self._send_json({"error": "file not found"}, HTTPStatus.NOT_FOUND)
+                return
+
+            try:
+                stat = file_path.stat()
+                file_size = stat.st_size
+                ext = file_path.suffix.lower()
+                mime_type = "video/mp4" if ext == ".mp4" else "video/webm" if ext == ".webm" else "application/octet-stream"
+
+                range_header = self.headers.get("Range")
+                if range_header and range_header.startswith("bytes="):
+                    ranges = range_header.replace("bytes=", "").split("-")
+                    start = int(ranges[0]) if ranges[0] else 0
+                    end = int(ranges[1]) if len(ranges) > 1 and ranges[1] else file_size - 1
+                    end = min(end, file_size - 1)
+                    length = max(0, end - start + 1)
+
+                    self.send_response(HTTPStatus.PARTIAL_CONTENT)
+                    self.send_header("Content-Type", mime_type)
+                    self.send_header("Content-Length", str(length))
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers()
+
+                    with open(file_path, "rb") as f:
+                        f.seek(start)
+                        self.wfile.write(f.read(length))
+                    return
+
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mime_type)
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                with open(file_path, "rb") as f:
+                    while chunk := f.read(65536):
+                        self.wfile.write(chunk)
+                return
+            except Exception as exc:
+                log.exception("Error serving render file %s: %s", filename, exc)
+                return
+
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     # -------------------------------------------------------------- POST
 
     def do_POST(self) -> None:
         route = urlparse(self.path)
-        if route.path != "/api/analyze":
+        if route.path not in ("/api/analyze", "/api/trim"):
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
 
@@ -414,6 +608,22 @@ class RequestHandler(BaseHTTPRequestHandler):
                 {"error": f"{type(exc).__name__}: {exc}"},
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+            return
+
+        if route.path == "/api/trim":
+            source = str(payload.get("source") or "").strip()
+            clips = payload.get("clips") or []
+            fast_mode = bool(payload.get("fast", True))
+            if not clips:
+                self._send_json({"error": "No clips provided for trimming"}, HTTPStatus.BAD_REQUEST)
+                return
+            job_id = uuid.uuid4().hex[:16]
+            with _jobs_lock:
+                _jobs[job_id] = {"status": "running", "logs": [], "warnings": []}
+            threading.Thread(
+                target=_run_trim_job, args=(job_id, source, clips, fast_mode), daemon=True
+            ).start()
+            self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
             return
 
         source = str(payload.get("source") or "").strip()
@@ -436,6 +646,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             target=_run_job, args=(job_id, source, demo, render), daemon=True
         ).start()
         self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
+
 
 
 def run_server(host: str | None = None, port: int | None = None) -> None:
