@@ -1,5 +1,5 @@
-from src.schema.state import EditorState
-from src.schema.clips import (
+from .state import EditorState
+from .clips import (
     TranscriptSegment,
     WordTimestamp,
     SemanticChunk,

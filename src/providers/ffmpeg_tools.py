@@ -7,6 +7,7 @@ is where the actual reason always lives.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,9 +25,24 @@ FFMPEG_INSTALL_HINT = (
 )
 
 
+def _find_binary(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+
+    # Fallback for Windows if PATH environment variable has not refreshed in current shell session
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        executable = name if name.lower().endswith(".exe") else f"{name}.exe"
+        winget_link = Path(local_app_data) / "Microsoft" / "WinGet" / "Links" / executable
+        if winget_link.exists():
+            return str(winget_link)
+    return None
+
+
 def ffmpeg_path() -> str:
     """Absolute path to ffmpeg, or raise MissingDependencyError."""
-    found = shutil.which(settings.ffmpeg_binary)
+    found = _find_binary(settings.ffmpeg_binary)
     if not found:
         raise MissingDependencyError(f"ffmpeg ({settings.ffmpeg_binary})", FFMPEG_INSTALL_HINT)
     return found
@@ -34,14 +50,14 @@ def ffmpeg_path() -> str:
 
 def ffprobe_path() -> str:
     """Absolute path to ffprobe, or raise MissingDependencyError."""
-    found = shutil.which(settings.ffprobe_binary)
+    found = _find_binary(settings.ffprobe_binary)
     if not found:
         raise MissingDependencyError(f"ffprobe ({settings.ffprobe_binary})", FFMPEG_INSTALL_HINT)
     return found
 
 
 def have_ffmpeg() -> bool:
-    return shutil.which(settings.ffmpeg_binary) is not None
+    return _find_binary(settings.ffmpeg_binary) is not None
 
 
 def run(

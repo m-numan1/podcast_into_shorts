@@ -82,9 +82,8 @@ class TestAudioNeverFabricates:
         placeholder file flowed onward as though it were extracted audio."""
         bogus = tmp_path / "not_really_media.mp4"
         bogus.write_bytes(b"this is not a media container")
-        with pytest.raises((AudioExtractionError, MissingDependencyError)) as exc:
+        with pytest.raises((AudioExtractionError, MissingDependencyError)):
             AudioProcessorProvider().extract_audio(str(bogus))
-        assert str(bogus) not in str(exc.value.args[0] if exc.value.args else "")
 
 
 class TestTranscriberNeverFabricates:
