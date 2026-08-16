@@ -141,3 +141,48 @@ class TestClipTrimmer:
         assert len(results) == 1
         assert results[0]["id"] == "clip_a"
         assert "rendered_file_path" in results[0]
+
+    @patch("src.providers.downloader.MediaDownloaderProvider.download")
+    def test_resolve_media_path_url(self, mock_download, tmp_path):
+        from src.providers.downloader import MediaInfo
+        dummy_file = tmp_path / "downloaded.mp4"
+        dummy_file.write_bytes(b"downloaded_content")
+        mock_download.return_value = MediaInfo(
+            title="Test",
+            file_path=str(dummy_file),
+            duration=100.0,
+            media_source="youtube_download",
+            has_video=True,
+        )
+        trimmer = ClipTrimmer(output_dir=tmp_path)
+        resolved = trimmer._resolve_media_path("https://youtu.be/uGAmyldSlhE")
+        assert resolved == dummy_file.resolve()
+        mock_download.assert_called_once_with("https://youtu.be/uGAmyldSlhE")
+
+    @patch("src.providers.trimmer.ClipTrimmer.trim_fast_copy")
+    @patch("src.providers.downloader.MediaDownloaderProvider.download")
+    def test_trim_with_youtube_url(self, mock_download, mock_fast_copy, tmp_path):
+        from src.providers.downloader import MediaInfo
+        dummy_file = tmp_path / "uGAmyldSlhE.mp4"
+        dummy_file.write_bytes(b"video_bytes")
+        mock_download.return_value = MediaInfo(
+            title="Video Title",
+            file_path=str(dummy_file),
+            duration=600.0,
+            media_source="youtube_download",
+            has_video=True,
+        )
+
+        def fake_copy(media, start, end, out_path):
+            out_path.write_bytes(b"clip")
+            return out_path
+
+        mock_fast_copy.side_effect = fake_copy
+
+        trimmer = ClipTrimmer(output_dir=tmp_path)
+        clips_data = [{"id": "c1", "start": "0:10", "end": "0:20"}]
+
+        results = trimmer.trim_all_from_json("https://youtu.be/uGAmyldSlhE?si=CwPDdH6srS7feFBg", clips_data)
+        assert len(results) == 1
+        assert "rendered_file_path" in results[0]
+        assert not results[0].get("error")

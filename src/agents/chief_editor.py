@@ -254,6 +254,9 @@ PACKAGING_SYSTEM = (
 )
 
 
+from src.utils.text_cleaner import clean_transcript_text
+
+
 def package_clip(
     candidate: CandidateClip,
     podcast_title: str,
@@ -268,19 +271,34 @@ def package_clip(
                 ClipPackaging,
                 system_prompt=PACKAGING_SYSTEM,
             )
-            return packaging, True
+            # Ensure model output is also cleaned of filler / sound tags
+            return (
+                ClipPackaging(
+                    title=clean_transcript_text(packaging.title),
+                    hook=clean_transcript_text(packaging.hook),
+                    one_sentence_summary=clean_transcript_text(packaging.one_sentence_summary),
+                    why_selected=packaging.why_selected,
+                    suggested_caption=clean_transcript_text(packaging.suggested_caption),
+                    suggested_thumbnail_text=packaging.suggested_thumbnail_text,
+                    suggested_hashtags=packaging.suggested_hashtags,
+                    target_audience=packaging.target_audience,
+                ),
+                True,
+            )
         except LLMError as exc:
             log.warning("Packaging via model failed for %s (%s); deriving locally.",
                         candidate.id, exc)
 
-    hook = first_sentence(candidate.raw_text)
+    raw_text_clean = clean_transcript_text(candidate.raw_text)
+    hook = first_sentence(raw_text_clean)
     tags = derive_hashtags(candidate)
-    summary = summarise(candidate.raw_text)
+    summary = summarise(raw_text_clean)
+    title = derive_title(candidate, podcast_title, rank)
     return (
         ClipPackaging(
-            title=derive_title(candidate, podcast_title, rank),
-            hook=hook,
-            one_sentence_summary=summary,
+            title=clean_transcript_text(title),
+            hook=clean_transcript_text(hook),
+            one_sentence_summary=clean_transcript_text(summary),
             why_selected=(
                 "Selected on measured signals only (no model configured): "
                 "duration, boundary cleanliness and cue density."
@@ -295,6 +313,7 @@ def package_clip(
         ),
         False,
     )
+
 
 
 def deduplicate(

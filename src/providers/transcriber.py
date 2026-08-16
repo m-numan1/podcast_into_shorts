@@ -25,8 +25,10 @@ from config.settings import settings
 from src.errors import MissingDependencyError, TranscriptionError
 from src.schema.clips import TranscriptSegment, WordTimestamp
 from src.utils.logging_config import get_logger
+from src.utils.text_cleaner import clean_transcript_text
 
 log = get_logger(__name__)
+
 
 YOUTUBE_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com",
@@ -86,7 +88,7 @@ def _load_whisper_model(name: str):
     method, reloading ~140 MB of weights on every invocation.
     """
     try:
-        import whisper
+        import whisper  # type: ignore[import-untyped,import-not-found]
     except ImportError as exc:
         raise MissingDependencyError(
             "openai-whisper",
@@ -96,7 +98,9 @@ def _load_whisper_model(name: str):
     return whisper.load_model(name)
 
 
+
 class TranscriberProvider:
+
     def transcribe(
         self,
         audio_path: str | None,
@@ -165,9 +169,10 @@ class TranscriberProvider:
                 start=float(item["start"]),
                 end=float(item["end"]),
                 speaker=item.get("speaker", "Speaker_1"),
-                text=item["text"],
+                text=clean_transcript_text(item["text"]),
             )
             for i, item in enumerate(raw["segments"])
+            if clean_transcript_text(item["text"])
         ]
         log.warning(
             "DEMO MODE: using bundled fixture transcript (%d segments). "
@@ -189,11 +194,14 @@ class TranscriberProvider:
         raw = self._fetch_captions(YouTubeTranscriptApi, video_id)
         segments: list[TranscriptSegment] = []
         for item in raw:
-            text = self._field(item, "text", "").replace("\n", " ").strip()
+            raw_text = str(self._field(item, "text", "") or "").replace("\n", " ").strip()
+            text = clean_transcript_text(raw_text)
             if not text:
                 continue
-            start = float(self._field(item, "start", 0.0))
-            duration = float(self._field(item, "duration", 0.0))
+            start_val = self._field(item, "start", 0.0)
+            dur_val = self._field(item, "duration", 0.0)
+            start = float(start_val) if start_val is not None else 0.0
+            duration = float(dur_val) if dur_val is not None else 0.0
             # Caption cues carry no reliable end time; clamp to a sane minimum
             # rather than the old blanket `max(duration, 2.0)`.
             end = start + max(duration, 0.5)
@@ -234,22 +242,23 @@ class TranscriberProvider:
         for idx, seg in enumerate(result.get("segments", [])):
             words = [
                 WordTimestamp(
-                    word=w.get("word", "").strip(),
-                    start=float(w.get("start", 0.0)),
-                    end=float(w.get("end", 0.0)),
-                    confidence=float(w.get("probability", 1.0)),
+                    word=clean_transcript_text(w.get("word", "")).strip(),
+                    start=float(w.get("start", 0.0) or 0.0),
+                    end=float(w.get("end", 0.0) or 0.0),
+                    confidence=float(w.get("probability", 1.0) or 1.0),
                 )
                 for w in seg.get("words", [])
-                if w.get("word", "").strip()
+                if clean_transcript_text(w.get("word", "")).strip()
             ]
-            text = (seg.get("text") or "").strip()
+            raw_text = (seg.get("text") or "").strip()
+            text = clean_transcript_text(raw_text)
             if not text:
                 continue
             segments.append(
                 TranscriptSegment(
                     id=idx + 1,
-                    start=float(seg.get("start", 0.0)),
-                    end=float(seg.get("end", 0.0)),
+                    start=float(seg.get("start", 0.0) or 0.0),
+                    end=float(seg.get("end", 0.0) or 0.0),
                     text=text,
                     # Whisper does not diarize. Label honestly instead of
                     # alternating "Host"/"Guest" by segment index, which the
@@ -265,8 +274,11 @@ class TranscriberProvider:
     @staticmethod
     def _field(item, name: str, default):
         if isinstance(item, dict):
-            return item.get(name, default)
-        return getattr(item, name, default)
+            val = item.get(name, default)
+        else:
+            val = getattr(item, name, default)
+        return default if val is None else val
+
 
     @staticmethod
     def _guess_speaker(previous: list[TranscriptSegment]) -> str:

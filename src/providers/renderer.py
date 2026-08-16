@@ -187,8 +187,15 @@ class ClipRenderer:
         has_video: bool,
         output_dir: Path | None = None,
     ) -> RenderResult:
-        """Render one clip to a vertical MP4."""
         source = Path(media_path)
+        if not source.exists():
+            from src.providers.downloader import is_url, MediaDownloaderProvider
+            if is_url(media_path):
+                info = MediaDownloaderProvider().download(media_path)
+                source = Path(info.file_path)
+            elif (settings.cache_dir / media_path).exists():
+                source = (settings.cache_dir / media_path).resolve()
+
         if not source.exists():
             raise RenderError(f"Source media missing for render: {source}")
 
