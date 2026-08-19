@@ -201,6 +201,8 @@ class ClipTrimmer:
         *,
         fast_mode: bool = True,
         output_dir: Path | None = None,
+        aspect_ratio: str | None = None,
+        enable_hook_banner: bool | None = None,
     ) -> dict[str, Any]:
         """Trim one clip based on timestamp dictionary."""
         out_dir = output_dir or self.output_dir
@@ -213,7 +215,7 @@ class ClipTrimmer:
         out_filename = f"{safe_id}_fast.mp4" if fast_mode else f"{safe_id}.mp4"
         out_path = out_dir / out_filename
 
-        log.info("Trimming clip %s (%.1fs -> %.1fs, fast=%s)", clip_id, start, end, fast_mode)
+        log.info("Trimming clip %s (%.1fs -> %.1fs, fast=%s, ratio=%s)", clip_id, start, end, fast_mode, aspect_ratio)
 
         if fast_mode:
             self.trim_fast_copy(source, start, end, out_path)
@@ -222,7 +224,7 @@ class ClipTrimmer:
             from src.providers.renderer import ClipRenderer
             from src.schema.clips import FinalClipOutput
 
-            renderer = ClipRenderer()
+            renderer = ClipRenderer(aspect_ratio=aspect_ratio, enable_hook_banner=enable_hook_banner if enable_hook_banner is not None else True)
             # Construct a basic FinalClipOutput object if needed
             duration = max(0.1, end - start)
             formatted_clip = FinalClipOutput(
@@ -257,6 +259,8 @@ class ClipTrimmer:
                 all_words=[],
                 has_video=has_vid,
                 output_dir=out_dir,
+                aspect_ratio=aspect_ratio,
+                enable_hook_banner=enable_hook_banner,
             )
             out_path = Path(res.output_path)
 
@@ -271,6 +275,8 @@ class ClipTrimmer:
         *,
         fast_mode: bool = True,
         output_dir: Path | None = None,
+        aspect_ratio: str | None = None,
+        enable_hook_banner: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Batch trim all clips specified in a JSON file or object."""
         if isinstance(json_input, (str, Path)):
@@ -313,6 +319,8 @@ class ClipTrimmer:
                     clip_data=clip,
                     fast_mode=fast_mode,
                     output_dir=out_dir,
+                    aspect_ratio=aspect_ratio,
+                    enable_hook_banner=enable_hook_banner,
                 )
                 rendered_clips.append(processed)
             except Exception as exc:

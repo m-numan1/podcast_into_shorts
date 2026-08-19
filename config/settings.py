@@ -113,6 +113,8 @@ class Settings(BaseSettings):
 
     # ---- Rendering ----
     render_enabled: bool = False
+    aspect_ratio: Literal["9:16", "1:1", "16:9"] = "9:16"
+    enable_hook_banner: bool = True
     render_width: int = 1080
     render_height: int = 1920
     # "blur_pad" keeps the whole 16:9 frame visible against a blurred fill;
@@ -130,6 +132,14 @@ class Settings(BaseSettings):
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     ffmpeg_timeout_sec: float = Field(default=1800.0, gt=0)
+
+    def resolve_dimensions(self, ratio: str | None = None) -> tuple[int, int]:
+        target = ratio or self.aspect_ratio
+        if target == "1:1":
+            return 1080, 1080
+        if target == "16:9":
+            return 1920, 1080
+        return 1080, 1920
 
     # ---- Graph execution ----
     # Checkpointing makes a run resumable after a crash mid-transcription.

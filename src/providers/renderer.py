@@ -107,11 +107,18 @@ def write_ass_file(
     path: Path,
     width: int,
     height: int,
+    *,
+    hook_text: str | None = None,
+    hook_duration: float = 3.5,
 ) -> Path:
-    """Write an ASS subtitle file styled for vertical video."""
-    font_size = max(28, int(height * 0.038))
+    """Write an ASS subtitle file styled for vertical/multi-format video with top hook banner."""
+    font_size = max(26, int(height * 0.038))
     margin_v = int(height * 0.16)
     margin_h = int(width * 0.07)
+
+    hook_font_size = max(28, int(height * 0.042))
+    hook_margin_v = int(height * 0.06)
+    hook_margin_h = int(width * 0.05)
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -123,23 +130,31 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Caption,Arial,{font_size},&H00FFFFFF,&H000000FF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,1,{max(2, font_size // 12)},2,2,{margin_h},{margin_h},{margin_v},1
+Style: HookHeader,Arial,{hook_font_size},&H00FFFFFF,&H000000FF,&H006366F1,&HA0000000,-1,0,0,0,100,100,0,0,1,{max(2, hook_font_size // 10)},2,8,{hook_margin_h},{hook_margin_h},{hook_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    lines = [
+    lines: list[str] = []
+    if hook_text and _ass_escape(hook_text):
+        lines.append(
+            f"Dialogue: 1,0:00:00.00,{_ass_time(hook_duration)},HookHeader,,0,0,0,,{_ass_escape(hook_text)}"
+        )
+
+    lines.extend([
         f"Dialogue: 0,{_ass_time(s)},{_ass_time(e)},Caption,,0,0,0,,{_ass_escape(t)}"
         for s, e, t in cues
         if _ass_escape(t)
-    ]
+    ])
     path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
 class ClipRenderer:
-    def __init__(self) -> None:
-        self.width = settings.render_width
-        self.height = settings.render_height
+    def __init__(self, aspect_ratio: str | None = None, enable_hook_banner: bool = True) -> None:
+        self.aspect_ratio = aspect_ratio or settings.aspect_ratio
+        self.enable_hook_banner = enable_hook_banner
+        self.width, self.height = settings.resolve_dimensions(self.aspect_ratio)
 
     def _video_filter(self, has_captions: bool, ass_path: Path | None) -> str:
         w, h = self.width, self.height
@@ -186,7 +201,13 @@ class ClipRenderer:
         *,
         has_video: bool,
         output_dir: Path | None = None,
+        aspect_ratio: str | None = None,
+        enable_hook_banner: bool | None = None,
     ) -> RenderResult:
+        ratio = aspect_ratio or self.aspect_ratio
+        self.width, self.height = settings.resolve_dimensions(ratio)
+        use_hook = self.enable_hook_banner if enable_hook_banner is None else enable_hook_banner
+
         source = Path(media_path)
         if not source.exists():
             from src.providers.downloader import is_url, MediaDownloaderProvider
@@ -208,17 +229,26 @@ class ClipRenderer:
         end = max(start + 0.5, clip.adjusted_end_seconds)
         duration = end - start
 
+        hook_text = None
+        if use_hook:
+            hook_text = (
+                clip.suggested_thumbnail_text
+                or clip.hook
+                or clip.title
+            )
+
         ass_path: Path | None = None
         cues: list[tuple[float, float, str]] = []
-        if settings.render_burn_captions:
-            cues = build_caption_cues(all_words, start, end)
-            if cues:
+        if settings.render_burn_captions or hook_text:
+            if settings.render_burn_captions:
+                cues = build_caption_cues(all_words, start, end)
+            if cues or hook_text:
                 ass_path = write_ass_file(
-                    cues, out_dir / f"{safe_id}.ass", self.width, self.height
-                )
-            else:
-                log.warning(
-                    "No word timings inside %s; rendering without captions.", clip.id
+                    cues,
+                    out_dir / f"{safe_id}.ass",
+                    self.width,
+                    self.height,
+                    hook_text=hook_text if use_hook else None,
                 )
 
         binary = ffmpeg_tools.ffmpeg_path()
@@ -228,7 +258,7 @@ class ClipRenderer:
         args += ["-i", str(source)]
 
         if has_video:
-            filter_complex = self._video_filter(bool(cues), ass_path)
+            filter_complex = self._video_filter(bool(ass_path), ass_path)
         else:
             # A synthetic background track for audio-only sources.
             args += [
@@ -236,7 +266,7 @@ class ClipRenderer:
                 "-t", f"{duration:.3f}",
                 "-i", f"color=c=0x0B0F19:s={self.width}x{self.height}:r=25",
             ]
-            filter_complex = self._audio_only_filter(bool(cues), ass_path)
+            filter_complex = self._audio_only_filter(bool(ass_path), ass_path)
 
         args += [
             "-filter_complex", filter_complex,
@@ -253,7 +283,7 @@ class ClipRenderer:
             str(out_path),
         ]
 
-        log.info("Rendering %s (%.1fs, %d caption cues)", clip.id, duration, len(cues))
+        log.info("Rendering %s (%.1fs, ratio=%s, hook_banner=%s)", clip.id, duration, ratio, bool(hook_text))
         ffmpeg_tools.run(
             args,
             error_cls=RenderError,
@@ -268,5 +298,5 @@ class ClipRenderer:
             output_path=str(out_path.resolve()),
             duration=duration,
             had_video=has_video,
-            captions_burned=bool(cues),
+            captions_burned=bool(ass_path),
         )
