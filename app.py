@@ -115,6 +115,14 @@ HTML_PAGE = """<!DOCTYPE html>
       <label><input type="checkbox" id="demo"> Demo mode (synthetic fixture)</label>
       <label><input type="checkbox" id="render"> Render MP4s (needs ffmpeg)</label>
       <label><input type="checkbox" id="fastCut" checked> Fast Cut (-c copy, instant)</label>
+      <label><input type="checkbox" id="enableHookBanner" checked> AI Hook Title Banner</label>
+      <label for="aspectRatio">Format:
+        <select id="aspectRatio" style="background:#1e293b; color:#fff; border:1px solid #334155; padding:.3rem .5rem; border-radius:6px; font-family:inherit; margin-left:.3rem;">
+          <option value="9:16" selected>9:16 Vertical (Shorts/TikTok/Reels)</option>
+          <option value="1:1">1:1 Square (LinkedIn/Insta)</option>
+          <option value="16:9">16:9 Landscape (YouTube Highlights)</option>
+        </select>
+      </label>
     </div>
     <pre class="log" id="log" hidden></pre>
   </div>
@@ -297,7 +305,13 @@ goBtn.addEventListener("click", async () => {
     const res = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source, demo, render: $("render").checked }),
+      body: JSON.stringify({
+        source,
+        demo,
+        render: $("render").checked,
+        aspect_ratio: $("aspectRatio").value,
+        enable_hook_banner: $("enableHookBanner").checked,
+      }),
     });
     started = await res.json();
     if (!res.ok) throw new Error(started.error || res.statusText);
@@ -329,6 +343,8 @@ trimAllBtn.addEventListener("click", async () => {
         source: source,
         clips: lastResult.clips,
         fast: $("fastCut").checked,
+        aspect_ratio: $("aspectRatio").value,
+        enable_hook_banner: $("enableHookBanner").checked,
       }),
     });
     started = await res.json();
@@ -369,7 +385,14 @@ class ThreadJobLogHandler(logging.Handler):
             self.handleError(record)
 
 
-def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
+def _run_job(
+    job_id: str,
+    source: str,
+    demo: bool,
+    render: bool,
+    aspect_ratio: str = "9:16",
+    enable_hook_banner: bool = True,
+) -> None:
     """Worker thread: run the pipeline and store the result."""
     from src.graph.workflow import VideoEditorPipeline
 
@@ -382,7 +405,12 @@ def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
             _jobs[job_id].update(fields)
 
     try:
-        log.info("Starting pipeline analysis job %s (source=%r, demo=%s, render=%s)", job_id, source, demo, render)
+        log.info(
+            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s)",
+            job_id, source, demo, render, aspect_ratio
+        )
+        settings.aspect_ratio = aspect_ratio  # type: ignore[assignment]
+        settings.enable_hook_banner = enable_hook_banner
         pipeline = VideoEditorPipeline()
         state = pipeline.run(source, demo_mode=demo, render=render, thread_id=job_id)
         provenance = state.provenance()
@@ -416,7 +444,14 @@ def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
         root_logger.removeHandler(handler)
 
 
-def _run_trim_job(job_id: str, source: str, clips: list[dict], fast_mode: bool) -> None:
+def _run_trim_job(
+    job_id: str,
+    source: str,
+    clips: list[dict],
+    fast_mode: bool,
+    aspect_ratio: str = "9:16",
+    enable_hook_banner: bool = True,
+) -> None:
     """Worker thread: batch trim clips directly from JSON timestamps."""
     from src.providers.trimmer import ClipTrimmer
 
@@ -429,8 +464,11 @@ def _run_trim_job(job_id: str, source: str, clips: list[dict], fast_mode: bool) 
             _jobs[job_id].update(fields)
 
     try:
-        log.info("Starting trim job %s for %d clips (fast=%s)", job_id, len(clips), fast_mode)
-        trimmer = ClipTrimmer()
+        log.info(
+            "Starting trim job %s for %d clips (fast=%s, ratio=%s, hook=%s)",
+            job_id, len(clips), fast_mode, aspect_ratio, enable_hook_banner
+        )
+        trimmer = ClipTrimmer(aspect_ratio=aspect_ratio, enable_hook_banner=enable_hook_banner)
         media_path = source
         if not media_path and (settings.cache_dir / "synthetic_demo.mp4").exists():
             media_path = str(settings.cache_dir / "synthetic_demo.mp4")
@@ -439,6 +477,8 @@ def _run_trim_job(job_id: str, source: str, clips: list[dict], fast_mode: bool) 
             media_path=media_path,
             json_input=clips,
             fast_mode=fast_mode,
+            aspect_ratio=aspect_ratio,
+            enable_hook_banner=enable_hook_banner,
         )
         log.info("Trim job %s complete: cut %d clip(s)", job_id, len(rendered))
         set_state(
@@ -610,6 +650,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        aspect_ratio = str(payload.get("aspect_ratio") or "9:16").strip()
+        enable_hook_banner = bool(payload.get("enable_hook_banner", True))
+
         if route.path == "/api/trim":
             source = str(payload.get("source") or "").strip()
             clips = payload.get("clips") or []
@@ -621,7 +664,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             with _jobs_lock:
                 _jobs[job_id] = {"status": "running", "logs": [], "warnings": []}
             threading.Thread(
-                target=_run_trim_job, args=(job_id, source, clips, fast_mode), daemon=True
+                target=_run_trim_job,
+                args=(job_id, source, clips, fast_mode, aspect_ratio, enable_hook_banner),
+                daemon=True,
             ).start()
             self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
             return
@@ -643,7 +688,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         # Analysis can take minutes; run it off the request thread so the
         # server stays responsive.
         threading.Thread(
-            target=_run_job, args=(job_id, source, demo, render), daemon=True
+            target=_run_job,
+            args=(job_id, source, demo, render, aspect_ratio, enable_hook_banner),
+            daemon=True,
         ).start()
         self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
 
