@@ -18,6 +18,7 @@ state plainly when they are synthetic or heuristically scored.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from http import HTTPStatus
@@ -303,9 +304,6 @@ goBtn.addEventListener("click", async () => {
 </body>
 </html>
 """
-
-
-import logging
 
 
 class ThreadJobLogHandler(logging.Handler):
