@@ -166,7 +166,7 @@ def generate_candidates(
         )
 
     # 1. Each chunk on its own.
-    for (first, last), chunk in zip(ranges, chunks):
+    for (first, last), chunk in zip(ranges, chunks, strict=True):
         emit(first, last, [chunk.id])
 
     # 2. Runs of 2..MAX_MERGE_RUN consecutive chunks.
@@ -178,7 +178,7 @@ def generate_candidates(
 
     # 3. Sub-windows inside any chunk that is long enough to contain a shorter
     #    self-contained clip. This is what the original never did.
-    for (first, last), chunk in zip(ranges, chunks):
+    for (first, last), chunk in zip(ranges, chunks, strict=True):
         if units[last].end - units[first].start <= min_duration * 1.4:
             continue
         for s in range(first, last + 1):
