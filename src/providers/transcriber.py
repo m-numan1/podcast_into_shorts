@@ -273,10 +273,11 @@ class TranscriberProvider:
 
     @staticmethod
     def _field(item, name: str, default):
-        if isinstance(item, dict):
-            val = item.get(name, default)
-        else:
-            val = getattr(item, name, default)
+        val = (
+            item.get(name, default)
+            if isinstance(item, dict)
+            else getattr(item, name, default)
+        )
         return default if val is None else val
 
 
