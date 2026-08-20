@@ -14,8 +14,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-TranscriptSource = Literal["youtube_captions", "whisper", "fixture"]
-MediaSource = Literal["youtube_download", "local_file", "fixture"]
+# "unavailable" means the stage that sets this never completed -- a run that
+# failed before node 1 or node 3. It is distinct from "fixture", which is only
+# ever set by an explicit --demo.
+TranscriptSource = Literal["youtube_captions", "whisper", "fixture", "unavailable"]
+MediaSource = Literal["youtube_download", "local_file", "fixture", "unavailable"]
 ScoringMode = Literal["llm", "heuristic"]
 EmbeddingBackendName = Literal["openai", "gemini", "lexical"]
 
@@ -40,6 +43,14 @@ class DataProvenance(BaseModel):
         """True when any input was fixture data rather than real media."""
         return self.media_source == "fixture" or self.transcript_source == "fixture"
 
+    @property
+    def is_incomplete(self) -> bool:
+        """True when a stage never ran, so there is nothing to describe."""
+        return (
+            self.media_source == "unavailable"
+            or self.transcript_source == "unavailable"
+        )
+
     def banner(self) -> str:
         """One-line human summary for logs and UI."""
         bits = [
@@ -50,7 +61,12 @@ class DataProvenance(BaseModel):
         ]
         if self.model_name:
             bits.append(f"model={self.model_name}")
-        prefix = "SYNTHETIC FIXTURE DATA" if self.is_synthetic else "real media"
+        if self.is_synthetic:
+            prefix = "SYNTHETIC FIXTURE DATA"
+        elif self.is_incomplete:
+            prefix = "INCOMPLETE RUN"
+        else:
+            prefix = "real media"
         return f"[{prefix}] " + "  ".join(bits)
 
 
