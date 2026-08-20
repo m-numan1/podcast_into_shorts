@@ -1,0 +1,54 @@
+name: CI
+
+# Lint and tests on every push and pull request. The project had no CI at all,
+# which is how a checkpointer that closed its own database before first use --
+# breaking every entry point including --demo -- reached main.
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Config lives in pyproject.toml [tool.ruff].
+      - name: ruff check
+        run: ruff check .
+
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # requirements-ml.txt is deliberately omitted: it pulls ~2 GB of PyTorch
+      # for local Whisper, and no test needs it.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: pytest
+        run: pytest
