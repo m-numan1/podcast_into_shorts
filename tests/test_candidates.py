@@ -115,7 +115,7 @@ class TestChunkUnitRanges:
         ranges = chunk_unit_ranges(units, chunks)
         assert len(ranges) == len(chunks)
         assert ranges[0][0] == 0
-        for (_, prev_last), (next_first, _) in zip(ranges, ranges[1:]):
+        for (_, prev_last), (next_first, _) in zip(ranges, ranges[1:], strict=False):
             assert next_first == prev_last + 1
 
 

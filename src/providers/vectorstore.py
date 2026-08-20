@@ -104,7 +104,7 @@ class VectorStoreProvider:
             scores, idxs = self._faiss_index.search(
                 np.ascontiguousarray([q]), min(k + 1, len(self.chunk_ids))
             )
-            pairs = list(zip(idxs[0].tolist(), scores[0].tolist()))
+            pairs = list(zip(idxs[0].tolist(), scores[0].tolist(), strict=True))
         else:
             sims = self.vectors @ q
             order = np.argsort(-sims)[: k + 1]

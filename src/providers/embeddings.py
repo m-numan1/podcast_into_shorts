@@ -71,7 +71,7 @@ def _feature_counts(text: str) -> dict[str, int]:
 
     for tok in tokens:
         bump(f"w:{tok}")
-    for a, b in zip(tokens, tokens[1:]):
+    for a, b in zip(tokens, tokens[1:], strict=False):
         bump(f"b:{a}_{b}")
     for tok in tokens:
         if len(tok) >= CHARGRAM_N:
