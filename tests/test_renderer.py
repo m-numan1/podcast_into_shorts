@@ -167,3 +167,33 @@ class TestWriteAssFile:
             raise AssertionError("no style line")
 
         assert font_size(large) > font_size(small)
+
+    def test_hook_header_in_ass_file(self, tmp_path):
+        path = write_ass_file(
+            [(0.0, 1.0, "hello world")],
+            tmp_path / "h.ass",
+            1080,
+            1920,
+            hook_text="MUST WATCH: Amazing Insight",
+        )
+        text = path.read_text(encoding="utf-8")
+        assert "Style: HookHeader" in text
+        assert "MUST WATCH: Amazing Insight" in text
+        lines = [line for line in text.splitlines() if line.startswith("Dialogue:")]
+        assert len(lines) == 2
+        assert "HookHeader" in lines[0]
+
+
+class TestClipRendererAspectRatios:
+    def test_aspect_ratio_resolutions(self):
+        from src.providers.renderer import ClipRenderer
+
+        r916 = ClipRenderer(aspect_ratio="9:16")
+        assert (r916.width, r916.height) == (1080, 1920)
+
+        r11 = ClipRenderer(aspect_ratio="1:1")
+        assert (r11.width, r11.height) == (1080, 1080)
+
+        r169 = ClipRenderer(aspect_ratio="16:9")
+        assert (r169.width, r169.height) == (1920, 1080)
+
