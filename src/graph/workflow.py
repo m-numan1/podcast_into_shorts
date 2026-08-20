@@ -87,13 +87,19 @@ def build_checkpointer():
     if not settings.checkpoint_enabled:
         return None
     try:
+        import sqlite3
+
         from langgraph.checkpoint.sqlite import SqliteSaver
 
         settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         db = settings.checkpoint_dir / "pipeline.sqlite"
-        # Caller owns the context manager; we keep the connection for the
-        # process lifetime deliberately.
-        saver = SqliteSaver.from_conn_string(str(db)).__enter__()
+        # Own the connection directly rather than calling `__enter__()` on
+        # `from_conn_string()`: that context manager closes the connection when
+        # the (unreferenced) generator is garbage-collected, so the very first
+        # checkpoint read raised "Cannot operate on a closed database".
+        # check_same_thread=False because LangGraph runs nodes on worker threads.
+        conn = sqlite3.connect(str(db), check_same_thread=False)
+        saver = SqliteSaver(conn)
         log.info("Checkpointing to %s", db)
         return saver
     except ImportError:
