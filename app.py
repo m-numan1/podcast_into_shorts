@@ -114,22 +114,19 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="checks">
       <label><input type="checkbox" id="demo"> Demo mode (synthetic fixture)</label>
       <label><input type="checkbox" id="render"> Render MP4s (needs ffmpeg)</label>
-      <label><input type="checkbox" id="fastCut" checked> Fast Cut (-c copy, instant)</label>
     </div>
     <pre class="log" id="log" hidden></pre>
   </div>
 
   <div id="banners"></div>
-  <button type="button" id="trimAll" style="display:none; background: var(--ok); color: #fff; font-weight:700; padding: .8rem 1.4rem; border:none; border-radius:10px; cursor:pointer; margin-bottom:1.5rem; font-size:1rem; font-family:inherit;">Render All Shorts from JSON</button>
   <div class="grid" id="grid"></div>
 </div>
 
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go"), trimAllBtn = $("trimAll");
+const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go");
 let timer = null;
-let lastResult = null;
 
 function logLine(text) {
   logBox.hidden = false;
@@ -160,15 +157,8 @@ function metric(label, value) {
 }
 
 function renderClips(data) {
-  lastResult = data;
   banners.replaceChildren();
   grid.replaceChildren();
-
-  if (data.clips && data.clips.length) {
-    trimAllBtn.style.display = "inline-block";
-  } else {
-    trimAllBtn.style.display = "none";
-  }
 
   const p = data.provenance || {};
   if (data.is_synthetic) {
@@ -247,7 +237,7 @@ async function poll(jobId, seenLogs) {
     res = await fetch("/api/status?job_id=" + encodeURIComponent(jobId));
   } catch (e) {
     logLine("[error] lost connection: " + e.message);
-    clearInterval(timer); goBtn.disabled = false; trimAllBtn.disabled = false;
+    clearInterval(timer); goBtn.disabled = false;
     return seenLogs;
   }
   const data = await res.json();
@@ -259,7 +249,6 @@ async function poll(jobId, seenLogs) {
   clearInterval(timer);
   timer = null;
   goBtn.disabled = false;
-  trimAllBtn.disabled = false;
 
   if (data.status === "error") {
     banners.replaceChildren();
@@ -304,38 +293,6 @@ goBtn.addEventListener("click", async () => {
   } catch (e) {
     logLine("[error] " + e.message);
     goBtn.disabled = false;
-    return;
-  }
-
-  let seen = 0;
-  timer = setInterval(async () => { seen = await poll(started.job_id, seen); }, 800);
-});
-
-trimAllBtn.addEventListener("click", async () => {
-  if (!lastResult || !lastResult.clips || !lastResult.clips.length) {
-    banner("error", "No JSON clips available to render.");
-    return;
-  }
-  const source = $("src").value.trim() || (lastResult && (lastResult.source || lastResult.media_file_path)) || "";
-  trimAllBtn.disabled = true;
-  logLine("[start batch trim] cutting " + lastResult.clips.length + " clips from JSON...");
-
-  let started;
-  try {
-    const res = await fetch("/api/trim", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source: source,
-        clips: lastResult.clips,
-        fast: $("fastCut").checked,
-      }),
-    });
-    started = await res.json();
-    if (!res.ok) throw new Error(started.error || res.statusText);
-  } catch (e) {
-    logLine("[trim error] " + e.message);
-    trimAllBtn.disabled = false;
     return;
   }
 
@@ -414,47 +371,6 @@ def _run_job(job_id: str, source: str, demo: bool, render: bool) -> None:
         )
     finally:
         root_logger.removeHandler(handler)
-
-
-def _run_trim_job(job_id: str, source: str, clips: list[dict], fast_mode: bool) -> None:
-    """Worker thread: batch trim clips directly from JSON timestamps."""
-    from src.providers.trimmer import ClipTrimmer
-
-    handler = ThreadJobLogHandler(job_id)
-    root_logger = logging.getLogger()
-    root_logger.addHandler(handler)
-
-    def set_state(**fields) -> None:
-        with _jobs_lock:
-            _jobs[job_id].update(fields)
-
-    try:
-        log.info("Starting trim job %s for %d clips (fast=%s)", job_id, len(clips), fast_mode)
-        trimmer = ClipTrimmer()
-        media_path = source
-        if not media_path and (settings.cache_dir / "synthetic_demo.mp4").exists():
-            media_path = str(settings.cache_dir / "synthetic_demo.mp4")
-
-        rendered = trimmer.trim_all_from_json(
-            media_path=media_path,
-            json_input=clips,
-            fast_mode=fast_mode,
-        )
-        log.info("Trim job %s complete: cut %d clip(s)", job_id, len(rendered))
-        set_state(
-            status="done",
-            clips=rendered,
-        )
-    except Exception as exc:
-        log.exception("Trim job %s failed", job_id)
-        set_state(
-            status="error",
-            error=f"{type(exc).__name__}: {exc}",
-            failed_stage="trimmer",
-        )
-    finally:
-        root_logger.removeHandler(handler)
-
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -590,7 +506,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = urlparse(self.path)
-        if route.path not in ("/api/analyze", "/api/trim"):
+        if route.path != "/api/analyze":
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
 
@@ -608,22 +524,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 {"error": f"{type(exc).__name__}: {exc}"},
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            return
-
-        if route.path == "/api/trim":
-            source = str(payload.get("source") or "").strip()
-            clips = payload.get("clips") or []
-            fast_mode = bool(payload.get("fast", True))
-            if not clips:
-                self._send_json({"error": "No clips provided for trimming"}, HTTPStatus.BAD_REQUEST)
-                return
-            job_id = uuid.uuid4().hex[:16]
-            with _jobs_lock:
-                _jobs[job_id] = {"status": "running", "logs": [], "warnings": []}
-            threading.Thread(
-                target=_run_trim_job, args=(job_id, source, clips, fast_mode), daemon=True
-            ).start()
-            self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
             return
 
         source = str(payload.get("source") or "").strip()
