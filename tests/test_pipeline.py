@@ -360,3 +360,54 @@ class TestDefaultCheckpointerRun:
             assert saved is not None, "the run wrote no checkpoint"
         finally:
             self._close(pipeline)
+
+
+class TestThreadIdIsNotPoisonedByFailure:
+    """A failed run must not break every later run on the same thread id.
+
+    `error` and `failed_stage` are ordinary checkpointed channels, and LangGraph
+    writes only the fields a Pydantic input explicitly sets. Leaving them to
+    their field defaults meant they were never written, so the checkpointed
+    values survived: after any failure, `_guard` routed straight to `abort`
+    before a single node ran, reporting the *earlier* run's error. Since
+    `--thread-id` defaults to "cli", one bad path broke the default CLI thread
+    permanently -- and it made the test suite itself order-dependent.
+    """
+
+    @staticmethod
+    def _close(pipeline) -> None:
+        conn = getattr(pipeline.checkpointer, "conn", None)
+        if conn is not None:
+            conn.close()
+
+    def test_a_failed_run_does_not_break_the_next_one(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "checkpoint_dir", tmp_path / "checkpoints")
+
+        pipeline = VideoEditorPipeline()
+        try:
+            failed = pipeline.run("./definitely-not-here.mp3", thread_id="shared")
+            assert failed.error is not None, "precondition: the first run must fail"
+
+            # Same thread id, different and entirely valid request.
+            recovered = pipeline.run("", demo_mode=True, thread_id="shared")
+
+            assert recovered.error is None, (
+                "the previous run's failure leaked into this one: "
+                f"{recovered.error}"
+            )
+            assert recovered.failed_stage is None
+            assert recovered.final_clips
+        finally:
+            self._close(pipeline)
+
+    def test_repeated_demo_runs_on_one_thread_all_succeed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "checkpoint_dir", tmp_path / "checkpoints")
+
+        pipeline = VideoEditorPipeline()
+        try:
+            for attempt in range(3):
+                state = pipeline.run("", demo_mode=True, thread_id="repeat")
+                assert state.error is None, f"run {attempt + 1} failed: {state.error}"
+                assert state.final_clips
+        finally:
+            self._close(pipeline)
