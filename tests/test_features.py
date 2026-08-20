@@ -11,7 +11,7 @@ from src.analysis.features import (
     keyword_density,
 )
 from src.analysis.segmentation import build_sentence_units, segment_units
-from src.schema.clips import SemanticChunk, TranscriptSegment
+from src.schema.clips import SemanticChunk
 
 SAMPLE = (
     "Welcome back to Tech Insights. Today we are diving into why 99% of AI startups "

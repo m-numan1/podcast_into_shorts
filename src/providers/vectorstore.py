@@ -161,7 +161,7 @@ class VectorStoreProvider:
         return str(target)
 
     @classmethod
-    def load(cls, path: str | Path) -> "VectorStoreProvider":
+    def load(cls, path: str | Path) -> VectorStoreProvider:
         target = Path(path)
         meta_path = target.with_suffix(".meta.json")
         if not target.exists() or not meta_path.exists():
