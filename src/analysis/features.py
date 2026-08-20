@@ -41,46 +41,14 @@ WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’-]*")
 
 # Cue families. Matched on whole words, and kept generic rather than tuned to
 # one transcript.
-CURIOSITY_CUES = frozenset("""
-why how secret secrets truth hidden mystery unknown puzzle surprising counterintuitive
-nobody everyone myth misconception reason actually wrong believe assume realise realize
-imagine suppose wonder question questions weird strange unexpected
-""".split())
-STRONG_CUES = frozenset("""
-never always must every none nobody everyone impossible guaranteed absolutely
-critical essential devastating unprecedented terrifying shocking huge massive
-worst best only single biggest hardest fastest proof proven
-""".split())
-STORY_CUES = frozenset("""
-story remember happened once when started began first time day night year
-example case customer client friend told said asked realised realized learned
-mistake failed failure lesson journey built discovered
-""".split())
-POSITIVE_CUES = frozenset("""
-great good best amazing incredible wonderful fantastic brilliant love loved
-success successful win won growth grew improve improved better easy simple
-remarkable fascinating excited exciting happy proud
-""".split())
-NEGATIVE_CUES = frozenset("""
-bad worst terrible awful fail failed failure hard difficult painful pain
-mistake wrong lose lost loss decline declined crisis catastrophe danger
-dangerous risk scared afraid fear angry frustrated broken hate
-""".split())
+CURIOSITY_CUES = frozenset(["why", "how", "secret", "secrets", "truth", "hidden", "mystery", "unknown", "puzzle", "surprising", "counterintuitive", "nobody", "everyone", "myth", "misconception", "reason", "actually", "wrong", "believe", "assume", "realise", "realize", "imagine", "suppose", "wonder", "question", "questions", "weird", "strange", "unexpected"])
+STRONG_CUES = frozenset(["never", "always", "must", "every", "none", "nobody", "everyone", "impossible", "guaranteed", "absolutely", "critical", "essential", "devastating", "unprecedented", "terrifying", "shocking", "huge", "massive", "worst", "best", "only", "single", "biggest", "hardest", "fastest", "proof", "proven"])
+STORY_CUES = frozenset(["story", "remember", "happened", "once", "when", "started", "began", "first", "time", "day", "night", "year", "example", "case", "customer", "client", "friend", "told", "said", "asked", "realised", "realized", "learned", "mistake", "failed", "failure", "lesson", "journey", "built", "discovered"])
+POSITIVE_CUES = frozenset(["great", "good", "best", "amazing", "incredible", "wonderful", "fantastic", "brilliant", "love", "loved", "success", "successful", "win", "won", "growth", "grew", "improve", "improved", "better", "easy", "simple", "remarkable", "fascinating", "excited", "exciting", "happy", "proud"])
+NEGATIVE_CUES = frozenset(["bad", "worst", "terrible", "awful", "fail", "failed", "failure", "hard", "difficult", "painful", "pain", "mistake", "wrong", "lose", "lost", "loss", "decline", "declined", "crisis", "catastrophe", "danger", "dangerous", "risk", "scared", "afraid", "fear", "angry", "frustrated", "broken", "hate"])
 
 # Words too generic to be useful as topic keywords.
-KEYWORD_STOPLIST = frozenset("""
-about actually after again against all also always and any are because been
-before being between both but came come could did does doing done down each
-even every first from gets getting give given going gone got had has have
-here how into just kind know like little look looking made make making many
-maybe mean means might more most much need never new next not now only other
-our out over own really right said same say says see seen she should since
-some something still such take taken than that the their them then there
-these they thing things think this those though thought through time too
-under until very want wanted was way well went were what when where which
-while who why will with without would yeah year years you your really quite
-sort lot bit going gonna okay right kinda basically literally
-""".split())
+KEYWORD_STOPLIST = frozenset(["about", "actually", "after", "again", "against", "all", "also", "always", "and", "any", "are", "because", "been", "before", "being", "between", "both", "but", "came", "come", "could", "did", "does", "doing", "done", "down", "each", "even", "every", "first", "from", "gets", "getting", "give", "given", "going", "gone", "got", "had", "has", "have", "here", "how", "into", "just", "kind", "know", "like", "little", "look", "looking", "made", "make", "making", "many", "maybe", "mean", "means", "might", "more", "most", "much", "need", "never", "new", "next", "not", "now", "only", "other", "our", "out", "over", "own", "really", "right", "said", "same", "say", "says", "see", "seen", "she", "should", "since", "some", "something", "still", "such", "take", "taken", "than", "that", "the", "their", "them", "then", "there", "these", "they", "thing", "things", "think", "this", "those", "though", "thought", "through", "time", "too", "under", "until", "very", "want", "wanted", "was", "way", "well", "went", "were", "what", "when", "where", "which", "while", "who", "why", "will", "with", "without", "would", "yeah", "year", "years", "you", "your", "really", "quite", "sort", "lot", "bit", "going", "gonna", "okay", "right", "kinda", "basically", "literally"])
 
 
 def _words(text: str) -> list[str]:

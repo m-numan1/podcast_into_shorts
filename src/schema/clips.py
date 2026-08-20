@@ -77,7 +77,7 @@ class WordTimestamp(BaseModel):
     confidence: float | None = 1.0
 
     @model_validator(mode="after")
-    def _check_range(self) -> "WordTimestamp":
+    def _check_range(self) -> WordTimestamp:
         if self.end < self.start:
             raise ValueError(f"word {self.word!r}: end {self.end} precedes start {self.start}")
         return self
@@ -92,7 +92,7 @@ class TranscriptSegment(BaseModel):
     words: list[WordTimestamp] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _check_range(self) -> "TranscriptSegment":
+    def _check_range(self) -> TranscriptSegment:
         if self.end < self.start:
             raise ValueError(f"segment {self.id}: end {self.end} precedes start {self.start}")
         return self
@@ -124,7 +124,7 @@ class SentenceUnit(BaseModel):
     ends_sentence: bool = False
 
     @model_validator(mode="after")
-    def _check_range(self) -> "SentenceUnit":
+    def _check_range(self) -> SentenceUnit:
         if self.end < self.start:
             raise ValueError(f"unit {self.id}: end {self.end} precedes start {self.start}")
         return self
@@ -154,7 +154,7 @@ class SemanticChunk(BaseModel):
     boundary_similarity: float | None = None
 
     @model_validator(mode="after")
-    def _check_range(self) -> "SemanticChunk":
+    def _check_range(self) -> SemanticChunk:
         if self.end < self.start:
             raise ValueError(f"chunk {self.id}: end {self.end} precedes start {self.start}")
         return self
@@ -199,7 +199,7 @@ class CandidateClip(BaseModel):
     lead_out_silence_sec: float = 0.0
 
     @model_validator(mode="after")
-    def _check_range(self) -> "CandidateClip":
+    def _check_range(self) -> CandidateClip:
         if self.end_time <= self.start_time:
             raise ValueError(
                 f"candidate {self.id}: end {self.end_time} must exceed start {self.start_time}"
@@ -306,7 +306,7 @@ class FinalClipOutput(BaseModel):
     provenance: DataProvenance | None = None
 
     @model_validator(mode="after")
-    def _check_range(self) -> "FinalClipOutput":
+    def _check_range(self) -> FinalClipOutput:
         if self.end_seconds <= self.start_seconds:
             raise ValueError(
                 f"clip {self.id}: end {self.end_seconds} must exceed start {self.start_seconds}"

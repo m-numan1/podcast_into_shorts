@@ -280,7 +280,7 @@ def evaluate_heuristically(
         2.5 + f.strong_statement_score * 4.0 + min(f.question_count, 3) * 0.7
         + abs(f.sentiment_score) * 2.0
     )
-    shareability = _clamp((hook * 0.4 + comment * 0.3 + emotional * 0.3))
+    shareability = _clamp(hook * 0.4 + comment * 0.3 + emotional * 0.3)
     replay = _clamp(2.5 + concreteness * 3.0 + f.emotion_score * 3.0)
 
     # Confidence is genuinely lower in heuristic mode, and lower still when the

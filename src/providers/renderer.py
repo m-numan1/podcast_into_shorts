@@ -189,7 +189,7 @@ class ClipRenderer:
     ) -> RenderResult:
         source = Path(media_path)
         if not source.exists():
-            from src.providers.downloader import is_url, MediaDownloaderProvider
+            from src.providers.downloader import MediaDownloaderProvider, is_url
             if is_url(media_path):
                 info = MediaDownloaderProvider().download(media_path)
                 source = Path(info.file_path)

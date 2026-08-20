@@ -18,7 +18,6 @@ from src.graph.workflow import (
     create_editor_graph,
 )
 from src.schema.state import EditorState, merge_agent_evaluations
-from tests.conftest import make_candidate
 
 
 @pytest.fixture(scope="module")
