@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     render_crf: int = Field(default=20, ge=0, le=51)
     render_preset: str = "medium"
     render_burn_captions: bool = True
+    # Highlight the currently-spoken word inside its cue, using the word-level
+    # timings the transcript already carries. This is the short-form
+    # convention. Set false for static cues, which is also the automatic
+    # behaviour for any cue whose words have no usable timings.
+    render_caption_highlight: bool = True
     render_loudness_lufs: float = -14.0
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
