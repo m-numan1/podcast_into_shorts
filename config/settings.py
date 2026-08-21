@@ -74,7 +74,12 @@ class Settings(BaseSettings):
     embedding_dim: int = 0
 
     # ---- Transcription ----
-    whisper_model: str = "base"
+    # A faster-whisper (CTranslate2) model name: tiny/base/small/medium/large-v3,
+    # optionally with an .en suffix for the English-only variants. medium.en is
+    # the accuracy/speed sweet spot for English podcasts; faster-whisper makes
+    # it affordable on CPU where openai-whisper's medium was not.
+    whisper_model: str = "medium.en"
+    # None means auto-detect. An empty env var is normalised to None below.
     transcript_language: str | None = None
     enable_diarization: bool = False
 
@@ -153,6 +158,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _derive_and_check(self) -> "Settings":
+        # `TRANSCRIPT_LANGUAGE=` in a .env file arrives as "", not None, and an
+        # empty string is a valid `str | None`. Whisper only auto-detects on
+        # None -- an empty string reaches the tokenizer and raises "Unsupported
+        # language" -- so blank-means-auto never worked. .env.example ships the
+        # blank form, which made this the default experience for anyone who
+        # copied it.
+        if self.transcript_language is not None and not self.transcript_language.strip():
+            object.__setattr__(self, "transcript_language", None)
+
         # Derive embedding width from the chosen backend/model.
         key = "lexical" if self.embedding_backend == "lexical" else self.embedding_model
         derived = EMBEDDING_DIMS.get(key)

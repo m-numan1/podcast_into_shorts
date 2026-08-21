@@ -6,9 +6,9 @@
 #   macOS          brew install ffmpeg
 #   Debian/Ubuntu  sudo apt install ffmpeg
 #
-# Local Whisper transcription is optional and pulls ~2 GB of PyTorch; it lives
-# in requirements-ml.txt. Without it, transcription needs a YouTube URL that
-# has captions.
+# Local Whisper transcription is optional and lives in requirements-ml.txt
+# (faster-whisper; no PyTorch). Without it, transcription needs a YouTube URL
+# that has captions.
 #
 # Upper bounds are pinned because langgraph and langchain both make breaking
 # changes in minor releases.
