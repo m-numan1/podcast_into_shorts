@@ -11,15 +11,19 @@ from pathlib import Path
 
 import pytest
 
+from config.settings import settings
 from src.errors import RenderError
 from src.providers import ffmpeg_tools
 from src.providers.ffmpeg_tools import have_ffmpeg
 from src.providers.renderer import (
+    BASE_COLOUR,
+    HIGHLIGHT_COLOUR,
     ClipRenderer,
     _ass_escape,
     _ass_time,
     build_caption_cues,
     escape_filter_path,
+    group_caption_cues,
     write_ass_file,
 )
 from src.schema.clips import FinalClipOutput, WordTimestamp
@@ -281,3 +285,98 @@ class TestApostrophePaths:
         rendered = Path(result.output_path)
         assert rendered.is_file() and rendered.stat().st_size > 0
         assert result.captions_burned
+
+
+class TestWordHighlightCues:
+    r"""Word-level highlighting, the short-form caption convention.
+
+    One Dialogue event per word, each showing the whole cue with only the
+    active word recoloured. Discrete events rather than ASS \k karaoke tags:
+    \k renders as a progressive colour wipe whose appearance varies between
+    libass builds, while an explicit \c override gives a crisp word-pop.
+    """
+
+    @staticmethod
+    def dialogue(path: Path) -> list[str]:
+        return [
+            line.split(",,0,0,0,,", 1)[1]
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("Dialogue")
+        ]
+
+    @pytest.fixture
+    def cues(self):
+        spoken = words([("the", 0.0, 0.3), ("quick", 0.3, 0.7), ("brown", 0.7, 1.1)])
+        return group_caption_cues(spoken, 0.0, 2.0)
+
+    def test_cue_keeps_its_word_timings(self, cues):
+        assert cues[0].words == (("the", 0.0, 0.3), ("quick", 0.3, 0.7), ("brown", 0.7, 1.1))
+
+    def test_one_event_per_word(self, cues, tmp_path):
+        path = write_ass_file(cues, tmp_path / "h.ass", 1080, 1920, highlight=True)
+        assert len(self.dialogue(path)) == 3
+
+    def test_each_event_shows_the_whole_cue(self, cues, tmp_path):
+        path = write_ass_file(cues, tmp_path / "h.ass", 1080, 1920, highlight=True)
+        for line in self.dialogue(path):
+            for word in ("the", "quick", "brown"):
+                assert word in line
+
+    def test_the_highlighted_word_advances(self, cues, tmp_path):
+        path = write_ass_file(cues, tmp_path / "h.ass", 1080, 1920, highlight=True)
+        lines = self.dialogue(path)
+        for index, word in enumerate(("the", "quick", "brown")):
+            assert rf"{{\c{HIGHLIGHT_COLOUR}}}{word}{{\c{BASE_COLOUR}}}" in lines[index]
+
+    def test_events_are_contiguous_so_captions_never_blink(self, cues, tmp_path):
+        """A gap between word timings must not blank the caption."""
+        path = write_ass_file(cues, tmp_path / "h.ass", 1080, 1920, highlight=True)
+        raw = [
+            line.split(",")[1:3]
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("Dialogue")
+        ]
+        for (_, end), (next_start, _) in zip(raw, raw[1:], strict=False):
+            assert end == next_start
+
+    def test_highlight_false_gives_one_static_event(self, cues, tmp_path):
+        path = write_ass_file(cues, tmp_path / "s.ass", 1080, 1920, highlight=False)
+        lines = self.dialogue(path)
+        assert lines == ["the quick brown"]
+        assert r"\c" not in lines[0]
+
+    def test_setting_drives_the_default(self, cues, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "render_caption_highlight", False)
+        assert len(self.dialogue(write_ass_file(cues, tmp_path / "a.ass", 1080, 1920))) == 1
+        monkeypatch.setattr(settings, "render_caption_highlight", True)
+        assert len(self.dialogue(write_ass_file(cues, tmp_path / "b.ass", 1080, 1920))) == 3
+
+    def test_single_word_cue_falls_back_to_static(self, tmp_path):
+        """Nothing to advance through, so per-word events would be noise."""
+        cues = group_caption_cues(words([("hello", 0.0, 0.4)]), 0.0, 1.0)
+        path = write_ass_file(cues, tmp_path / "one.ass", 1080, 1920, highlight=True)
+        assert self.dialogue(path) == ["hello"]
+
+    def test_tuple_cues_still_accepted_and_static(self, tmp_path):
+        """The plain (start, end, text) form has no word data to highlight."""
+        path = write_ass_file([(0.0, 1.0, "no word timings")], tmp_path / "t.ass",
+                              1080, 1920, highlight=True)
+        assert self.dialogue(path) == ["no word timings"]
+
+    def test_style_computation_is_unchanged(self, cues, tmp_path):
+        """Font size, margins and outline must survive the rewrite."""
+        body = write_ass_file(cues, tmp_path / "h.ass", 1080, 1920,
+                              highlight=True).read_text(encoding="utf-8")
+        assert f"Style: Caption,Arial,{max(26, int(1920 * 0.038))}," in body
+        assert f",{int(1080 * 0.07)},{int(1080 * 0.07)},{int(1920 * 0.16)},1" in body
+
+    def test_hook_banner_still_emitted_alongside_highlights(self, cues, tmp_path):
+        path = write_ass_file(cues, tmp_path / "h.ass", 1080, 1920,
+                              highlight=True, hook_text="WATCH THIS")
+        body = path.read_text(encoding="utf-8")
+        assert "HookHeader" in body and "WATCH THIS" in body
+
+    def test_build_caption_cues_tuple_api_is_unchanged(self):
+        """Existing callers and tests must keep working."""
+        spoken = words([("a", 0.0, 0.3), ("b", 0.3, 0.7)])
+        assert build_caption_cues(spoken, 0.0, 2.0) == [(0.0, 0.7, "a b")]
