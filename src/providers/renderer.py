@@ -57,14 +57,30 @@ def _ass_escape(text: str) -> str:
 
 
 def escape_filter_path(path: Path) -> str:
-    """Escape a path for use inside an ffmpeg filter argument.
+    """Escape a path for use inside a single-quoted ffmpeg filter argument.
 
     Windows paths break the filter parser twice over: backslashes are escapes
     and the drive colon separates filter options. Both must be neutralised.
+
+    Apostrophes need close-escape-reopen (`'\\''`), not a backslash. ffmpeg
+    performs no escaping inside a single-quoted section, so the `\\'` this used
+    to emit ended the quote early and the rest of the filtergraph -- including
+    the `[vout]` pad label -- was swallowed into the filename:
+
+        Unable to open .../My Podcasts Folder/out/clip.ass[vout]
+        Error initializing filters
+
+    That is fixed here. Note the separate, harder limitation measured against
+    ffmpeg 9.0: an apostrophe cannot be carried through the filter argument at
+    all. Every quoted form (`'\\''`, `'\\\\''`, `'\\'\\''`) parses cleanly but
+    silently *drops* the apostrophe, and every unquoted form fails with
+    "Invalid argument". `ClipRenderer` therefore never passes a directory to
+    the subtitles filter -- see `_run_ffmpeg`.
     """
     text = str(path).replace("\\", "/")
     text = text.replace(":", r"\:")
-    text = text.replace("'", r"\'")
+    # Close the quoted section, emit an escaped literal quote, reopen it.
+    text = text.replace("'", r"'\''")
     text = text.replace("[", r"\[").replace("]", r"\]")
     text = text.replace(",", r"\,")
     return text
@@ -156,7 +172,20 @@ class ClipRenderer:
         self.enable_hook_banner = enable_hook_banner
         self.width, self.height = settings.resolve_dimensions(self.aspect_ratio)
 
-    def _video_filter(self, has_captions: bool, ass_path: Path | None) -> str:
+    def _subtitles_clause(self, ass_name: str | None) -> str:
+        """Chain the subtitles filter, or a passthrough when there are none.
+
+        `ass_name` is a bare filename, never a path: ffmpeg is run with its cwd
+        set to the directory holding it. A directory component cannot be
+        escaped safely once it contains an apostrophe (see
+        `escape_filter_path`), and clip ids are already sanitised to
+        [0-9A-Za-z_-], so the bare name is always representable.
+        """
+        if not ass_name:
+            return ";[v]null[vout]"
+        return f";[v]subtitles='{escape_filter_path(Path(ass_name))}'[vout]"
+
+    def _video_filter(self, has_captions: bool, ass_name: str | None) -> str:
         w, h = self.width, self.height
         if settings.render_mode == "crop":
             base = (
@@ -173,24 +202,16 @@ class ClipRenderer:
                 f"[fg]scale={w}:-2:force_original_aspect_ratio=decrease[fgs];"
                 f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
             )
-        if has_captions and ass_path is not None:
-            base += f";[v]subtitles='{escape_filter_path(ass_path)}'[vout]"
-        else:
-            base += ";[v]null[vout]"
-        return base
+        return base + self._subtitles_clause(ass_name if has_captions else None)
 
-    def _audio_only_filter(self, has_captions: bool, ass_path: Path | None) -> str:
+    def _audio_only_filter(self, has_captions: bool, ass_name: str | None) -> str:
         w, h = self.width, self.height
         wave_h = int(h * 0.18)
         base = (
             f"[0:a]showwaves=s={w}x{wave_h}:mode=cline:rate=25:colors=0x6366F1[wave];"
             f"[1:v][wave]overlay=0:(H-h)/2:shortest=1,setsar=1[v]"
         )
-        if has_captions and ass_path is not None:
-            base += f";[v]subtitles='{escape_filter_path(ass_path)}'[vout]"
-        else:
-            base += ";[v]null[vout]"
-        return base
+        return base + self._subtitles_clause(ass_name if has_captions else None)
 
     def render(
         self,
@@ -220,8 +241,13 @@ class ClipRenderer:
         if not source.exists():
             raise RenderError(f"Source media missing for render: {source}")
 
-        out_dir = output_dir or settings.render_dir
+        out_dir = (output_dir or settings.render_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Absolute: ffmpeg runs with cwd=out_dir so the subtitles filter can
+        # reference the .ass by bare name, which means every other path in the
+        # argv must not depend on the caller's cwd.
+        out_dir = out_dir.resolve()
+        source = source.resolve()
         safe_id = re.sub(r"[^0-9A-Za-z_-]", "_", clip.id)
         out_path = out_dir / f"{safe_id}.mp4"
 
@@ -257,8 +283,9 @@ class ClipRenderer:
         args += ["-accurate_seek", "-ss", f"{start:.3f}", "-t", f"{duration:.3f}"]
         args += ["-i", str(source)]
 
+        ass_name = ass_path.name if ass_path is not None else None
         if has_video:
-            filter_complex = self._video_filter(bool(ass_path), ass_path)
+            filter_complex = self._video_filter(bool(ass_name), ass_name)
         else:
             # A synthetic background track for audio-only sources.
             args += [
@@ -266,7 +293,7 @@ class ClipRenderer:
                 "-t", f"{duration:.3f}",
                 "-i", f"color=c=0x0B0F19:s={self.width}x{self.height}:r=25",
             ]
-            filter_complex = self._audio_only_filter(bool(ass_path), ass_path)
+            filter_complex = self._audio_only_filter(bool(ass_name), ass_name)
 
         args += [
             "-filter_complex", filter_complex,
@@ -288,6 +315,8 @@ class ClipRenderer:
             args,
             error_cls=RenderError,
             what=f"render of {clip.id}",
+            # So the subtitles filter can name the .ass without a directory.
+            cwd=out_dir,
         )
 
         if not out_path.exists() or out_path.stat().st_size == 0:

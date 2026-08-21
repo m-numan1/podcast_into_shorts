@@ -11,14 +11,18 @@ from pathlib import Path
 
 import pytest
 
+from src.errors import RenderError
+from src.providers import ffmpeg_tools
+from src.providers.ffmpeg_tools import have_ffmpeg
 from src.providers.renderer import (
+    ClipRenderer,
     _ass_escape,
     _ass_time,
     build_caption_cues,
     escape_filter_path,
     write_ass_file,
 )
-from src.schema.clips import WordTimestamp
+from src.schema.clips import FinalClipOutput, WordTimestamp
 
 
 def words(spec: list[tuple[str, float, float]]) -> list[WordTimestamp]:
@@ -197,3 +201,83 @@ class TestClipRendererAspectRatios:
         r169 = ClipRenderer(aspect_ratio="16:9")
         assert (r169.width, r169.height) == (1920, 1080)
 
+
+
+class TestApostrophePaths:
+    """A path containing an apostrophe must not break the filtergraph (TP-3).
+
+    `escape_filter_path` used to emit `\'`, but ffmpeg performs no escaping
+    inside a single-quoted filter argument, so the quote terminated early and
+    the rest of the graph -- including the `[vout]` pad label -- was swallowed
+    into the filename:
+
+        Unable to open .../My Podcasts Folder/out/clip.ass[vout]
+        Error initializing filters
+
+    Measured against ffmpeg 9.0, an apostrophe cannot be carried through the
+    filter argument by *any* quoting form: `'\''`, `'\\''` and `'\'\''`
+    all parse but silently drop it, and unquoted forms fail outright. So the
+    renderer never puts a directory in the filter at all -- it passes the bare
+    filename and sets ffmpeg's cwd. These tests pin both halves.
+    """
+
+    def test_apostrophe_uses_close_escape_reopen_not_backslash(self):
+        out = escape_filter_path(Path("/tmp/O'Brien/clip.ass"))
+        assert r"'\''" in out
+        # The bare `\'` form is what terminated the quoted section early.
+        assert out == r"/tmp/O'\''Brien/clip.ass"
+
+    def test_subtitles_clause_never_contains_a_directory(self):
+        """The clause the filtergraph actually receives.
+
+        Whatever the output directory is called, only the bare filename may
+        reach the filter -- that is what makes an apostrophe in the directory
+        irrelevant.
+        """
+        renderer = ClipRenderer()
+        clause = renderer._subtitles_clause("clip_01.ass")
+        assert "subtitles='clip_01.ass'" in clause
+        assert "/" not in clause.split("subtitles=")[1]
+
+    def test_no_captions_gives_a_passthrough(self):
+        assert ClipRenderer()._subtitles_clause(None) == ";[v]null[vout]"
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="needs the ffmpeg binary")
+    def test_renders_from_a_directory_containing_an_apostrophe(self, tmp_path):
+        """The end-to-end proof: this raised RenderError before the fix."""
+        source = tmp_path / "source.mp4"
+        ffmpeg_tools.run(
+            [
+                ffmpeg_tools.ffmpeg_path(), "-y", "-hide_banner",
+                "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=300:duration=3",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest", str(source),
+            ],
+            error_cls=RenderError,
+            what="build apostrophe-test fixture",
+        )
+
+        out_dir = tmp_path / "O'Brien's Show" / "renders"
+        out_dir.mkdir(parents=True)
+
+        clip = FinalClipOutput(
+            id="clip_01", rank=1, title="T",
+            start_timestamp="00:00", end_timestamp="00:02",
+            start_seconds=0.0, end_seconds=2.0, duration_seconds=2.0,
+            adjusted_start_seconds=0.0, adjusted_end_seconds=2.0,
+            hook="h", one_sentence_summary="s", why_this_clip_was_selected="w",
+            viewer_retention_prediction="High", virality_score=5.0,
+            confidence_score=5.0, overall_score=5.0, target_platform=["TikTok"],
+            target_audience="a", suggested_caption="c",
+            suggested_thumbnail_text="T", suggested_hashtags=["#x"],
+        )
+        spoken = words([("hello", 0.0, 0.5), ("there", 0.5, 1.0), ("world", 1.0, 1.5)])
+
+        result = ClipRenderer().render(
+            clip, str(source), [], spoken, has_video=True, output_dir=out_dir
+        )
+
+        rendered = Path(result.output_path)
+        assert rendered.is_file() and rendered.stat().st_size > 0
+        assert result.captions_burned
