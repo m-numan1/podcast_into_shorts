@@ -1,5 +1,9 @@
 """Transcription: YouTube captions when available, otherwise local Whisper.
 
+Local transcription runs on faster-whisper (CTranslate2), which needs neither
+openai-whisper nor torch. Same models, same word-level timestamps, a fraction
+of the install size and several times faster on CPU.
+
 Two behaviour changes:
 
   * There is no hidden fallback transcript. When every backend fails this
@@ -82,20 +86,25 @@ def extract_youtube_id(source: str) -> str:
 
 @lru_cache(maxsize=2)
 def _load_whisper_model(name: str):
-    """Load and cache a Whisper model.
+    """Load and cache a faster-whisper model.
 
-    The original called `whisper.load_model("base")` inside the transcribe
-    method, reloading ~140 MB of weights on every invocation.
+    Cached because the original called `load_model` inside the transcribe
+    method, reloading the weights on every invocation.
+
+    `device="auto"` picks CUDA when it is available and CPU otherwise;
+    `compute_type="auto"` then picks the fastest precision that device
+    supports (int8 on a typical CPU, float16 on a GPU). Neither needs a
+    setting, and neither needs torch -- faster-whisper runs on CTranslate2.
     """
     try:
-        import whisper  # type: ignore[import-untyped,import-not-found]
+        from faster_whisper import WhisperModel
     except ImportError as exc:
         raise MissingDependencyError(
-            "openai-whisper",
-            "pip install openai-whisper  (also requires torch and ffmpeg)",
+            "faster-whisper",
+            "pip install faster-whisper  (also requires ffmpeg)",
         ) from exc
-    log.info("Loading Whisper model %r (first call only)", name)
-    return whisper.load_model(name)
+    log.info("Loading faster-whisper model %r (first call only)", name)
+    return WhisperModel(name, device="auto", compute_type="auto")
 
 
 
@@ -147,7 +156,7 @@ class TranscriberProvider:
 
         raise TranscriptionError(
             "Could not transcribe the source. Attempts:\n  - " + "\n  - ".join(attempts),
-            "Install openai-whisper for local transcription, or use a YouTube URL "
+            "Install faster-whisper for local transcription, or use a YouTube URL "
             "that has captions. Run with --demo to exercise the pipeline on the "
             "bundled fixture transcript instead.",
         )
@@ -231,34 +240,44 @@ class TranscriberProvider:
 
     def _from_whisper(self, audio_path: str) -> list[TranscriptSegment]:
         model = _load_whisper_model(settings.whisper_model)
-        log.info("Transcribing with Whisper (%s); this can take a while.", settings.whisper_model)
-        result = model.transcribe(
+        language = settings.transcript_language or None
+        log.info(
+            "Transcribing with faster-whisper (%s, language=%s); this can take a while.",
+            settings.whisper_model, language or "auto-detect",
+        )
+        # faster-whisper returns (generator, info). Nothing is decoded until the
+        # generator is consumed, so `info` is read first for the log line and
+        # the segments are iterated below.
+        raw_segments, info = model.transcribe(
             audio_path,
             word_timestamps=True,
-            language=settings.transcript_language,
-            verbose=False,
+            language=language,
         )
+        log.info(
+            "Detected language %r (probability %.2f), audio duration %.1fs",
+            info.language, info.language_probability, info.duration,
+        )
+
         segments: list[TranscriptSegment] = []
-        for idx, seg in enumerate(result.get("segments", [])):
+        for idx, seg in enumerate(raw_segments):
             words = [
                 WordTimestamp(
-                    word=clean_transcript_text(w.get("word", "")).strip(),
-                    start=float(w.get("start", 0.0) or 0.0),
-                    end=float(w.get("end", 0.0) or 0.0),
-                    confidence=float(w.get("probability", 1.0) or 1.0),
+                    word=clean_transcript_text(w.word).strip(),
+                    start=float(w.start or 0.0),
+                    end=float(w.end or 0.0),
+                    confidence=float(w.probability if w.probability is not None else 1.0),
                 )
-                for w in seg.get("words", [])
-                if clean_transcript_text(w.get("word", "")).strip()
+                for w in (seg.words or [])
+                if clean_transcript_text(w.word).strip()
             ]
-            raw_text = (seg.get("text") or "").strip()
-            text = clean_transcript_text(raw_text)
+            text = clean_transcript_text((seg.text or "").strip())
             if not text:
                 continue
             segments.append(
                 TranscriptSegment(
                     id=idx + 1,
-                    start=float(seg.get("start", 0.0) or 0.0),
-                    end=float(seg.get("end", 0.0) or 0.0),
+                    start=float(seg.start or 0.0),
+                    end=float(seg.end or 0.0),
                     text=text,
                     # Whisper does not diarize. Label honestly instead of
                     # alternating "Host"/"Guest" by segment index, which the
