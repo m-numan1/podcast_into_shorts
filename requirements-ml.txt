@@ -1,11 +1,19 @@
 # Optional: local Whisper transcription.
 #
-# Installs PyTorch (~2 GB). Only needed to transcribe local media files or
-# YouTube videos without caption tracks. Also requires ffmpeg on PATH.
+# Only needed to transcribe local media files, or YouTube videos with no
+# caption track. Also requires ffmpeg on PATH.
 #
 #   pip install -r requirements.txt -r requirements-ml.txt
+#
+# faster-whisper runs the same Whisper models on CTranslate2 rather than
+# PyTorch: no torch, no CUDA toolkit, a few hundred MB instead of ~2 GB, and
+# several times faster on CPU. Word-level timestamps are supported, which the
+# renderer needs for burned captions.
+#
+# Model weights are downloaded on first use and cached in ~/.cache/huggingface.
+# WHISPER_MODEL defaults to medium.en (~1.5 GB); tiny.en / base.en / small.en
+# are much smaller if you want to try it out first.
 
 -r requirements.txt
 
-openai-whisper>=20231117
-torch>=2.0
+faster-whisper>=1.0,<2.0
