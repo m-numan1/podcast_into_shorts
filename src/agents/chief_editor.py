@@ -35,6 +35,7 @@ from src.schema.clips import (
 )
 from src.utils.logging_config import get_logger
 from src.utils.metrics import overlap_ratio, seconds_to_timestamp
+from src.utils.text_cleaner import clean_transcript_text
 
 log = get_logger(__name__)
 
@@ -252,9 +253,6 @@ PACKAGING_SYSTEM = (
     "concrete; never use generic filler like 'you won't believe' or 'this "
     "changes everything'. Every claim must be supported by the transcript."
 )
-
-
-from src.utils.text_cleaner import clean_transcript_text
 
 
 def package_clip(

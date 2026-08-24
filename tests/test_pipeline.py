@@ -18,7 +18,6 @@ from src.graph.workflow import (
     create_editor_graph,
 )
 from src.schema.state import EditorState, merge_agent_evaluations
-from tests.conftest import make_candidate
 
 
 @pytest.fixture(scope="module")
@@ -291,3 +290,123 @@ class TestCLIExitCodes:
 
         with pytest.raises(SystemExit):
             cli.main([])
+
+
+class TestDefaultCheckpointerRun:
+    """The default construction path -- the one real users actually get.
+
+    Every other pipeline test in this file passes `use_checkpointer=False`, so
+    `VideoEditorPipeline()` with its real defaults was exercised by nothing.
+    That is how the SQLite checkpointer shipped closing its own database before
+    first use: `SqliteSaver.from_conn_string(db).__enter__()` kept no reference
+    to the `@contextmanager` generator, so garbage collection ran its `finally`
+    and closed the connection. Every entry point -- `--demo` included -- then
+    died on the first checkpoint read with
+
+        sqlite3.ProgrammingError: Cannot operate on a closed database.
+
+    These tests fail against c395d0d and pass with the connection owned directly.
+    """
+
+    @staticmethod
+    def _close(pipeline) -> None:
+        """Release the SQLite handle so tmp_path cleanup works on Windows."""
+        conn = getattr(pipeline.checkpointer, "conn", None)
+        if conn is not None:
+            conn.close()
+
+    def test_demo_runs_end_to_end_with_the_default_checkpointer(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "checkpoint_dir", tmp_path / "checkpoints")
+        assert settings.checkpoint_enabled, (
+            "this test only means anything while checkpointing defaults to on"
+        )
+
+        # No use_checkpointer=False. This is the constructor main.py and app.py use.
+        pipeline = VideoEditorPipeline()
+        try:
+            assert pipeline.checkpointer is not None, (
+                "default construction must attach a checkpointer"
+            )
+
+            state = pipeline.run("", demo_mode=True, thread_id="default-ckpt")
+
+            assert state.error is None, (
+                f"default pipeline failed at {state.failed_stage}: {state.error}"
+            )
+            assert state.final_clips, "default pipeline produced no clips"
+        finally:
+            self._close(pipeline)
+
+    def test_checkpointer_connection_is_still_usable_after_the_run(
+        self, tmp_path, monkeypatch
+    ):
+        """Reading state back proves the connection outlived construction.
+
+        This is the assertion that pins the bug: on c395d0d the connection is
+        already closed by the time anything touches it.
+        """
+        monkeypatch.setattr(settings, "checkpoint_dir", tmp_path / "checkpoints")
+
+        pipeline = VideoEditorPipeline()
+        try:
+            pipeline.run("", demo_mode=True, thread_id="readback")
+
+            saved = pipeline.checkpointer.get_tuple(
+                {"configurable": {"thread_id": "readback"}}
+            )
+            assert saved is not None, "the run wrote no checkpoint"
+        finally:
+            self._close(pipeline)
+
+
+class TestThreadIdIsNotPoisonedByFailure:
+    """A failed run must not break every later run on the same thread id.
+
+    `error` and `failed_stage` are ordinary checkpointed channels, and LangGraph
+    writes only the fields a Pydantic input explicitly sets. Leaving them to
+    their field defaults meant they were never written, so the checkpointed
+    values survived: after any failure, `_guard` routed straight to `abort`
+    before a single node ran, reporting the *earlier* run's error. Since
+    `--thread-id` defaults to "cli", one bad path broke the default CLI thread
+    permanently -- and it made the test suite itself order-dependent.
+    """
+
+    @staticmethod
+    def _close(pipeline) -> None:
+        conn = getattr(pipeline.checkpointer, "conn", None)
+        if conn is not None:
+            conn.close()
+
+    def test_a_failed_run_does_not_break_the_next_one(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "checkpoint_dir", tmp_path / "checkpoints")
+
+        pipeline = VideoEditorPipeline()
+        try:
+            failed = pipeline.run("./definitely-not-here.mp3", thread_id="shared")
+            assert failed.error is not None, "precondition: the first run must fail"
+
+            # Same thread id, different and entirely valid request.
+            recovered = pipeline.run("", demo_mode=True, thread_id="shared")
+
+            assert recovered.error is None, (
+                "the previous run's failure leaked into this one: "
+                f"{recovered.error}"
+            )
+            assert recovered.failed_stage is None
+            assert recovered.final_clips
+        finally:
+            self._close(pipeline)
+
+    def test_repeated_demo_runs_on_one_thread_all_succeed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "checkpoint_dir", tmp_path / "checkpoints")
+
+        pipeline = VideoEditorPipeline()
+        try:
+            for attempt in range(3):
+                state = pipeline.run("", demo_mode=True, thread_id="repeat")
+                assert state.error is None, f"run {attempt + 1} failed: {state.error}"
+                assert state.final_clips
+        finally:
+            self._close(pipeline)

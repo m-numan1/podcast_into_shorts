@@ -21,7 +21,7 @@ import hashlib
 import math
 import re
 import time
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -35,11 +35,7 @@ TOKEN_RE = re.compile(r"[a-z0-9']+")
 
 # Extremely common words carry no topic signal; dropping them sharpens the
 # similarity dip at real topic boundaries.
-STOPWORDS = frozenset("""
-a an and are as at be been but by for from had has have he her his i if in is it
-its me my not of on or our she so than that the their them then there these they
-this to too was we were what when which who will with would you your
-""".split())
+STOPWORDS = frozenset(["a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "for", "from", "had", "has", "have", "he", "her", "his", "i", "if", "in", "is", "it", "its", "me", "my", "not", "of", "on", "or", "our", "she", "so", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "to", "too", "was", "we", "were", "what", "when", "which", "who", "will", "with", "would", "you", "your"])
 
 
 def _tokenize(text: str) -> list[str]:
@@ -75,7 +71,7 @@ def _feature_counts(text: str) -> dict[str, int]:
 
     for tok in tokens:
         bump(f"w:{tok}")
-    for a, b in zip(tokens, tokens[1:]):
+    for a, b in zip(tokens, tokens[1:], strict=False):
         bump(f"b:{a}_{b}")
     for tok in tokens:
         if len(tok) >= CHARGRAM_N:
