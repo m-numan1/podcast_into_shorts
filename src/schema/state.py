@@ -107,8 +107,14 @@ class EditorState(BaseModel):
         from config.settings import settings
 
         return DataProvenance(
-            media_source=self.media_source or "fixture",
-            transcript_source=self.transcript_source or "fixture",
+            # "unavailable", not "fixture": these are None until the stage that
+            # sets them succeeds, so defaulting to "fixture" stamped every run
+            # that failed before node 3 as synthetic fixture data -- exactly the
+            # mislabelling this record exists to prevent. A real local file that
+            # failed at transcription reported "SYNTHETIC FIXTURE DATA ... these
+            # results describe a bundled fixture".
+            media_source=self.media_source or "unavailable",
+            transcript_source=self.transcript_source or "unavailable",
             scoring_mode="llm" if self.scoring_mode == "llm" else "heuristic",
             embedding_backend=settings.embedding_backend,
             model_name=settings.active_model_name if self.scoring_mode == "llm" else None,

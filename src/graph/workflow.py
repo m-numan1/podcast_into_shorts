@@ -87,13 +87,19 @@ def build_checkpointer():
     if not settings.checkpoint_enabled:
         return None
     try:
+        import sqlite3
+
         from langgraph.checkpoint.sqlite import SqliteSaver
 
         settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         db = settings.checkpoint_dir / "pipeline.sqlite"
-        # Caller owns the context manager; we keep the connection for the
-        # process lifetime deliberately.
-        saver = SqliteSaver.from_conn_string(str(db)).__enter__()
+        # Own the connection directly rather than calling `__enter__()` on
+        # `from_conn_string()`: that context manager closes the connection when
+        # the (unreferenced) generator is garbage-collected, so the very first
+        # checkpoint read raised "Cannot operate on a closed database".
+        # check_same_thread=False because LangGraph runs nodes on worker threads.
+        conn = sqlite3.connect(str(db), check_same_thread=False)
+        saver = SqliteSaver(conn)
         log.info("Checkpointing to %s", db)
         return saver
     except ImportError:
@@ -181,6 +187,15 @@ class VideoEditorPipeline:
             input_file_path=None if is_url(source) else (source or None),
             demo_mode=demo_mode,
             render_requested=render,
+            # Set explicitly, not left to the field default. LangGraph writes
+            # only the fields a Pydantic input actually sets (`model_fields_set`),
+            # so an unset `error` left the *checkpointed* value in place: after
+            # any failed run, every later run on the same thread id was routed
+            # straight to `abort` by `_guard`, reporting the earlier run's
+            # failure and never executing. `--thread-id` defaults to "cli", so
+            # a single bad path broke the default CLI thread permanently.
+            error=None,
+            failed_stage=None,
         )
 
         config: dict[str, Any] = {}

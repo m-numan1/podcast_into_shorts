@@ -7,6 +7,7 @@ was handed to the transcriber as if it were audio.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from config.settings import settings
@@ -21,6 +22,23 @@ TARGET_SAMPLE_RATE = 16000
 TARGET_CHANNELS = 1
 
 
+def cache_key(in_path: Path) -> str:
+    """Identity of a media file for audio-cache purposes.
+
+    Keyed on the resolved absolute path, size and mtime rather than the bare
+    filename. Podcast files are very often `episode.mp3` or `audio.mp3` in
+    per-show folders; keying on the stem alone meant the second such file hit
+    the reuse check and got the *first* file's audio transcribed, producing a
+    complete and entirely wrong set of clips with no error.
+
+    Including size and mtime also invalidates the entry when a file is replaced
+    in place -- a re-download to the same path is a different recording.
+    """
+    stat = in_path.stat()
+    fingerprint = f"{in_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
+    return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:16]
+
+
 class AudioProcessorProvider:
     def extract_audio(self, media_path: str, *, force: bool = False) -> str:
         """Extract 16 kHz mono WAV from `media_path` and return its path.
@@ -33,7 +51,7 @@ class AudioProcessorProvider:
         if not in_path.exists():
             raise AudioExtractionError(f"Media file does not exist: {in_path}")
 
-        out_path = settings.cache_dir / f"{in_path.stem}_16k_mono.wav"
+        out_path = settings.cache_dir / f"{cache_key(in_path)}_16k_mono.wav"
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not force and self._is_usable(out_path):
