@@ -27,6 +27,7 @@ from src.schema.clips import (
 )
 from src.utils.logging_config import get_logger
 from src.utils.metrics import seconds_to_timestamp
+from src.utils.text_cleaner import starts_with_backchannel
 
 log = get_logger(__name__)
 
@@ -139,6 +140,24 @@ DANGLING_START_RE = re.compile(
 )
 
 
+def has_dangling_start(text: str) -> bool:
+    """True when the opening words make a poor first three seconds.
+
+    Two families, and the second was missing. `DANGLING_START_RE` covers
+    unresolved references -- conjunctions and bare pronouns -- but not
+    acknowledgment tokens, so the -2.5 hook penalty never fired on any of the
+    observed failures: clips opening "Mhm.", "Absolutely.", "Exactly." and
+    "Yeah, yeah, and it takes you outside of your body." all scored as though
+    they opened cleanly.
+
+    `candidates.py` trims openers that are *nothing but* acknowledgment. This
+    catches what survives that trim -- a unit with real content that merely
+    begins with one, which is too substantive to cut but still a weak hook --
+    using the same vocabulary, so the two cannot drift apart.
+    """
+    return bool(DANGLING_START_RE.match(text)) or starts_with_backchannel(text)
+
+
 def _clamp(value: float) -> float:
     return max(0.0, min(10.0, value))
 
@@ -237,7 +256,7 @@ def evaluate_heuristically(
     text = candidate.raw_text.strip()
     first_sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0] if text else ""
 
-    dangling = bool(DANGLING_START_RE.match(text))
+    dangling = has_dangling_start(text)
     clean_edges = (
         int(candidate.starts_on_sentence_boundary) + int(candidate.ends_on_sentence_boundary)
     )
