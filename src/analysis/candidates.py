@@ -19,6 +19,7 @@ from src.schema.clips import (
 )
 from src.utils.logging_config import get_logger
 from src.utils.metrics import overlap_ratio
+from src.utils.text_cleaner import is_backchannel
 
 log = get_logger(__name__)
 
@@ -84,6 +85,44 @@ def _merge_features(
         topic_confidence=sum(f.topic_confidence for f in feats) / n,
         story_likelihood=max(f.story_likelihood for f in feats),
     )
+
+
+def trim_leading_backchannel(
+    units: list[SentenceUnit],
+    first: int,
+    last: int,
+    min_duration: float,
+) -> int:
+    """Advance `first` past leading backchannel units, returning the new index.
+
+    A clip that opens on "Mhm." or "Absolutely." is opening on the *previous*
+    speaker's tail. A real run shipped clips starting "Mhm.", "Absolutely.",
+    "Exactly." and "No difference." -- none of which is the clip's content.
+
+    Three constraints, any of which stops the walk:
+
+      * the remaining span must stay at or above `min_duration`, so trimming
+        never turns a valid candidate into one that gets discarded;
+      * it never advances past the first substantive unit, so real content is
+        never dropped;
+      * the new start must still sit on a sentence boundary -- the unit being
+        skipped has to end one -- so trimming cannot introduce a mid-sentence
+        cut where there was a clean one.
+
+    `_build` reads `gap_before` off whichever unit ends up first, so lead-in
+    silence is recomputed for the new start as a consequence of trimming here
+    rather than needing a separate pass.
+    """
+    end_time = units[last].end
+    cursor = first
+    # `cursor < last` keeps at least one unit: a window is never emptied.
+    while cursor < last and is_backchannel(units[cursor].text):
+        if not units[cursor].ends_sentence:
+            break
+        if end_time - units[cursor + 1].start < min_duration:
+            break
+        cursor += 1
+    return cursor
 
 
 def _build(
@@ -152,7 +191,13 @@ def generate_candidates(
     candidates: list[CandidateClip] = []
 
     def emit(first: int, last: int, chunk_ids: list[str]) -> None:
-        if (first, last) in seen or first > last:
+        if first > last:
+            return
+        # Trim before the dedup check, so two windows that differ only in how
+        # much backchannel they open on collapse into one candidate, and before
+        # the duration check, so the check sees the span actually emitted.
+        first = trim_leading_backchannel(units, first, last, min_duration)
+        if (first, last) in seen:
             return
         duration = units[last].end - units[first].start
         if not (min_duration <= duration <= max_duration):
