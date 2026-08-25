@@ -110,8 +110,15 @@ def extract_clip_timestamps(clip_data: dict[str, Any]) -> tuple[float, float, st
 class ClipTrimmer:
     """Fast clip trimmer that cuts videos directly based on timestamp JSONs."""
 
-    def __init__(self, output_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        output_dir: Path | None = None,
+        aspect_ratio: str | None = None,
+        enable_hook_banner: bool | None = None,
+    ) -> None:
         self.output_dir = output_dir or settings.render_dir
+        self.aspect_ratio = aspect_ratio
+        self.enable_hook_banner = enable_hook_banner
 
     def _resolve_media_path(self, media_path: str | Path | None) -> Path:
         """Resolve a media path string, URL, or empty path to an existing local file."""
