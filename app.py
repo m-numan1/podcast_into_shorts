@@ -385,6 +385,22 @@ class ThreadJobLogHandler(logging.Handler):
             self.handleError(record)
 
 
+def _get_model_info(reload_env: bool = True) -> str:
+    """Reload settings from .env and return a descriptive string for terminal and logs."""
+    if reload_env:
+        try:
+            from config.settings import Settings
+            fresh = Settings()
+            for k, v in fresh.model_dump().items():
+                setattr(settings, k, v)
+        except Exception as exc:
+            log.warning("Could not refresh settings from .env: %s", exc)
+
+    if settings.uses_llm:
+        return f"LLM model (provider: {settings.default_llm_provider}, model: {settings.active_model_name})"
+    return "Heuristic model (no LLM)"
+
+
 def _run_job(
     job_id: str,
     source: str,
@@ -405,9 +421,11 @@ def _run_job(
             _jobs[job_id].update(fields)
 
     try:
+        model_info = _get_model_info()
+        print(f"\n[ANALYSIS] Starting job {job_id} using: {model_info}", flush=True)
         log.info(
-            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s)",
-            job_id, source, demo, render, aspect_ratio
+            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s, model=%s)",
+            job_id, source, demo, render, model_info, aspect_ratio
         )
         settings.aspect_ratio = aspect_ratio  # type: ignore[assignment]
         settings.enable_hook_banner = enable_hook_banner
@@ -684,6 +702,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         job_id = uuid.uuid4().hex[:16]
         with _jobs_lock:
             _jobs[job_id] = {"status": "running", "logs": [], "warnings": []}
+
+        model_info = _get_model_info()
+        print(f"\n[ANALYSE CLICKED] Analysis requested -> Using {model_info}\n", flush=True)
 
         # Analysis can take minutes; run it off the request thread so the
         # server stays responsive.

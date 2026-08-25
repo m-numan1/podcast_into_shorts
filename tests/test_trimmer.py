@@ -95,6 +95,11 @@ class TestExtractClipTimestamps:
 
 
 class TestClipTrimmer:
+    def test_init_with_aspect_ratio_and_hook_banner(self, tmp_path):
+        trimmer = ClipTrimmer(output_dir=tmp_path, aspect_ratio="9:16", enable_hook_banner=False)
+        assert trimmer.aspect_ratio == "9:16"
+        assert trimmer.enable_hook_banner is False
+
     @patch("src.providers.trimmer.ClipTrimmer.trim_fast_copy")
     def test_trim_all_from_json_dict(self, mock_fast_copy, tmp_path):
         trimmer = ClipTrimmer(output_dir=tmp_path)

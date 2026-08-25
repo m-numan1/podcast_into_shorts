@@ -143,3 +143,31 @@ class TestNoImportSideEffects:
         s.ensure_directories()
         for d in (s.output_dir, s.cache_dir, s.render_dir, s.checkpoint_dir):
             assert d.is_dir()
+
+
+class TestAppModelInfo:
+    def test_get_model_info_heuristic(self, monkeypatch):
+        import app
+        from config.settings import settings
+        monkeypatch.setattr(settings, "default_llm_provider", "heuristic")
+        info = app._get_model_info(reload_env=False)
+        assert "Heuristic" in info
+
+    def test_get_model_info_llm(self, monkeypatch):
+        import app
+        from config.settings import settings
+        monkeypatch.setattr(settings, "default_llm_provider", "gemini")
+        monkeypatch.setattr(settings, "gemini_api_key", "test-key")
+        info = app._get_model_info(reload_env=False)
+        assert "LLM model" in info
+        assert "gemini" in info
+
+    def test_run_job_signature_accepts_six_arguments(self):
+        import inspect
+        import app
+        sig = inspect.signature(app._run_job)
+        assert len(sig.parameters) == 6
+        assert "aspect_ratio" in sig.parameters
+        assert "enable_hook_banner" in sig.parameters
+
+
