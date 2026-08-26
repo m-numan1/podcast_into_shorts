@@ -67,13 +67,24 @@ def node_09_synthesize(state: EditorState) -> dict[str, Any]:
             "Loosen DEDUP_OVERLAP_THRESHOLD or widen the clip duration window.",
         )
 
+    from src.utils.caption_exporter import export_captions_to_txt
+
+    temp_state = state.model_copy(update={"final_clips": clips, "scoring_mode": scoring_mode})
+    try:
+        captions_path = export_captions_to_txt(temp_state)
+        export_log = f"[Node 9 Chief Editor] Saved full transcript and shorts captions report to {captions_path}"
+    except Exception as exc:
+        log.warning("Could not export captions TXT: %s", exc)
+        export_log = "[Node 9 Chief Editor] Captions TXT export warning: " + str(exc)
+
     update: dict[str, Any] = {
         "final_clips": clips,
         "scoring_mode": scoring_mode,
         "current_node": "NODE_09_SYNTHESIZE_COMPLETE",
         "logs": [
             f"[Node 9 Chief Editor] published {len(clips)} clips "
-            f"(scoring={scoring_mode}, top score {clips[0].overall_score:.2f}/10)"
+            f"(scoring={scoring_mode}, top score {clips[0].overall_score:.2f}/10)",
+            export_log,
         ],
     }
     if warnings:

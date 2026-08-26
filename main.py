@@ -252,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print(f"Wrote {len(state.final_clips)} clips to {out_file}")
+    captions_file = settings.output_dir / "captions.txt"
+    if captions_file.exists():
+        print(f"Wrote full video & shorts captions report to {captions_file}")
     if state.rendered_files:
         print(f"Rendered {len(state.rendered_files)} MP4(s) to {settings.render_dir}")
     return EXIT_OK

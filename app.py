@@ -440,6 +440,8 @@ def _run_job(
                 warnings=list(state.warnings),
             )
             return
+        captions_file = settings.output_dir / "captions.txt"
+        captions_path_str = str(captions_file) if captions_file.exists() else None
         set_state(
             status="done",
             warnings=list(state.warnings),
@@ -449,6 +451,7 @@ def _run_job(
             clips=[c.model_dump(mode="json") for c in state.final_clips],
             media_file_path=state.media_file_path,
             source=state.source,
+            captions_file_path=captions_path_str,
         )
         log.info("Pipeline job %s completed with %d clips", job_id, len(state.final_clips))
     except Exception as exc:  # a worker crash must not kill the server
@@ -590,6 +593,36 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(snapshot)
             return
+
+        if route.path.startswith("/outputs/"):
+            raw_name = route.path[len("/outputs/"):]
+            filename = unquote(raw_name)
+            output_root = settings.output_dir.resolve()
+            file_path = (settings.output_dir / filename).resolve()
+            if output_root not in file_path.parents and file_path != output_root:
+                self._send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+            if not file_path.exists() or not file_path.is_file():
+                self._send_json({"error": "file not found"}, HTTPStatus.NOT_FOUND)
+                return
+
+            try:
+                stat = file_path.stat()
+                file_size = stat.st_size
+                ext = file_path.suffix.lower()
+                mime_type = "text/plain; charset=utf-8" if ext in (".txt", ".json", ".log") else "application/octet-stream"
+
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mime_type)
+                self.send_header("Content-Length", str(file_size))
+                self.end_headers()
+                with open(file_path, "rb") as f:
+                    while chunk := f.read(65536):
+                        self.wfile.write(chunk)
+                return
+            except Exception as exc:
+                log.exception("Error serving output file %s: %s", filename, exc)
+                return
 
         if route.path.startswith("/renders/"):
             raw_name = route.path[len("/renders/"):]
