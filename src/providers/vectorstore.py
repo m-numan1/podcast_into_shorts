@@ -104,7 +104,7 @@ class VectorStoreProvider:
             scores, idxs = self._faiss_index.search(
                 np.ascontiguousarray([q]), min(k + 1, len(self.chunk_ids))
             )
-            pairs = list(zip(idxs[0].tolist(), scores[0].tolist()))
+            pairs = list(zip(idxs[0].tolist(), scores[0].tolist(), strict=True))
         else:
             sims = self.vectors @ q
             order = np.argsort(-sims)[: k + 1]
@@ -161,7 +161,7 @@ class VectorStoreProvider:
         return str(target)
 
     @classmethod
-    def load(cls, path: str | Path) -> "VectorStoreProvider":
+    def load(cls, path: str | Path) -> VectorStoreProvider:
         target = Path(path)
         meta_path = target.with_suffix(".meta.json")
         if not target.exists() or not meta_path.exists():

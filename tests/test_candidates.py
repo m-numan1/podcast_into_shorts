@@ -14,12 +14,13 @@ from src.analysis.candidates import (
     chunk_unit_ranges,
     generate_candidates,
     shortlist_candidates,
+    trim_leading_backchannel,
 )
 from src.analysis.features import extract_all
 from src.analysis.segmentation import build_sentence_units, segment_units
 from src.errors import CandidateGenerationError
-from src.schema.clips import ExtractedFeatures, TranscriptSegment
-from tests.conftest import make_candidate, make_caption_segments
+from src.schema.clips import ExtractedFeatures, SemanticChunk, TranscriptSegment
+from tests.conftest import make_candidate, make_caption_segments, make_unit
 
 MIN_D, MAX_D, OPT_D = 15.0, 90.0, 45.0
 
@@ -115,7 +116,7 @@ class TestChunkUnitRanges:
         ranges = chunk_unit_ranges(units, chunks)
         assert len(ranges) == len(chunks)
         assert ranges[0][0] == 0
-        for (_, prev_last), (next_first, _) in zip(ranges, ranges[1:]):
+        for (_, prev_last), (next_first, _) in zip(ranges, ranges[1:], strict=False):
             assert next_first == prev_last + 1
 
 
@@ -199,3 +200,105 @@ class TestCheapPrescore:
             ),
         )
         assert cheap_prescore(rich, OPT_D) > cheap_prescore(plain, OPT_D)
+
+
+class TestLeadingBackchannelTrim:
+    """A clip must not open on the previous speaker's tail.
+
+    A real run shipped clips starting "Mhm.", "Absolutely.", "Exactly." and
+    "No difference." -- acknowledgment noise, not the clip's content.
+    """
+
+    @staticmethod
+    def units(texts_and_spans, gap_before=0.5):
+        """Sentence units from (text, start, end) triples."""
+        return [
+            make_unit(i + 1, start, end, text=text,
+                      ends_sentence=True, gap_before=gap_before)
+            for i, (text, start, end) in enumerate(texts_and_spans)
+        ]
+
+    def test_leading_backchannels_are_skipped(self):
+        units = self.units([
+            ("Mhm.", 0.0, 1.0),
+            ("Absolutely.", 1.0, 2.0),
+            ("Most founders skip the hardest part of building a company.", 2.0, 30.0),
+        ])
+        assert trim_leading_backchannel(units, 0, 2, min_duration=15.0) == 2
+
+    def test_candidate_starts_at_the_first_substantive_unit(self):
+        units = self.units([
+            ("Mhm.", 0.0, 1.0),
+            ("Absolutely.", 1.0, 2.0),
+            ("Most founders skip the hardest part of building a company.", 2.0, 30.0),
+        ])
+        chunk = SemanticChunk(
+            id="chunk_001", start=0.0, end=30.0,
+            text=" ".join(u.text for u in units),
+            topic_summary="t", boundary_reason="r", segment_ids=[1, 2, 3],
+        )
+        candidates = generate_candidates(
+            units, [chunk], {}, min_duration=15.0, max_duration=90.0
+        )
+        assert candidates
+        assert candidates[0].start_time == 2.0
+        assert not candidates[0].raw_text.lower().startswith("mhm")
+        assert candidates[0].raw_text.startswith("Most founders")
+
+    def test_trim_stops_when_it_would_break_the_minimum_duration(self):
+        """Trimming must never turn a valid candidate into a discarded one."""
+        units = self.units([
+            ("Mhm.", 0.0, 1.0),
+            ("We doubled our price twice and churn went down.", 1.0, 16.0),
+        ])
+        # Dropping "Mhm." leaves 15.0s exactly; dropping more is impossible
+        # anyway, but a 16s minimum makes the constraint bite.
+        assert trim_leading_backchannel(units, 0, 1, min_duration=16.0) == 0
+        assert trim_leading_backchannel(units, 0, 1, min_duration=15.0) == 1
+
+    def test_a_clip_with_no_backchannel_opener_is_untouched(self):
+        units = self.units([
+            ("Most founders skip the hardest part.", 0.0, 10.0),
+            ("We doubled our price twice.", 10.0, 25.0),
+        ])
+        assert trim_leading_backchannel(units, 0, 1, min_duration=15.0) == 0
+
+    def test_never_advances_past_the_first_substantive_unit(self):
+        units = self.units([
+            ("Yeah.", 0.0, 1.0),
+            ("Pricing is the whole game for early companies.", 1.0, 20.0),
+            ("Exactly.", 20.0, 21.0),
+        ])
+        # The trailing "Exactly." is not a *leading* backchannel and stays.
+        assert trim_leading_backchannel(units, 0, 2, min_duration=15.0) == 1
+
+    def test_a_window_is_never_emptied(self):
+        units = self.units([("Mhm.", 0.0, 1.0), ("Absolutely.", 1.0, 2.0)])
+        assert trim_leading_backchannel(units, 0, 1, min_duration=0.5) == 1
+
+    def test_trim_requires_a_sentence_boundary(self):
+        """Skipping a unit that does not end a sentence would create a
+        mid-sentence cut where the original start was clean."""
+        units = [
+            make_unit(1, 0.0, 1.0, text="Yeah", ends_sentence=False, gap_before=0.5),
+            make_unit(2, 1.0, 30.0, text="pricing changed everything for us.",
+                      ends_sentence=True, gap_before=0.0),
+        ]
+        assert trim_leading_backchannel(units, 0, 1, min_duration=15.0) == 0
+
+    def test_lead_in_silence_is_recomputed_for_the_new_start(self):
+        units = [
+            make_unit(1, 0.0, 1.0, text="Mhm.", ends_sentence=True, gap_before=0.1),
+            make_unit(2, 1.0, 30.0, text="Most founders skip the hardest part.",
+                      ends_sentence=True, gap_before=0.9),
+        ]
+        chunk = SemanticChunk(
+            id="chunk_001", start=0.0, end=30.0,
+            text=" ".join(u.text for u in units),
+            topic_summary="t", boundary_reason="r", segment_ids=[1, 2],
+        )
+        candidates = generate_candidates(
+            units, [chunk], {}, min_duration=15.0, max_duration=90.0
+        )
+        # 0.9 is the gap before the *new* first unit, not the 0.1 of the old one.
+        assert candidates[0].lead_in_silence_sec == pytest.approx(0.9)

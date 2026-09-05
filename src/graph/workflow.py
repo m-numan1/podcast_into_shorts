@@ -187,6 +187,15 @@ class VideoEditorPipeline:
             input_file_path=None if is_url(source) else (source or None),
             demo_mode=demo_mode,
             render_requested=render,
+            # Set explicitly, not left to the field default. LangGraph writes
+            # only the fields a Pydantic input actually sets (`model_fields_set`),
+            # so an unset `error` left the *checkpointed* value in place: after
+            # any failed run, every later run on the same thread id was routed
+            # straight to `abort` by `_guard`, reporting the earlier run's
+            # failure and never executing. `--thread-id` defaults to "cli", so
+            # a single bad path broke the default CLI thread permanently.
+            error=None,
+            failed_stage=None,
         )
 
         config: dict[str, Any] = {}

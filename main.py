@@ -47,19 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output JSON filename, written inside the outputs directory.",
     )
     parser.add_argument(
-        "--trim-json", default=None,
-        help="Path to a JSON file (e.g. final_clips.json or timestamp list) to "
-             "batch cut MP4 clips directly from --source without re-running transcription.",
-    )
-    parser.add_argument(
-        "--fast", action="store_true", default=True,
-        help="Fast cut using stream-copy (-c copy) for instant trimming (< 0.5s per clip).",
-    )
-    parser.add_argument(
-        "--full-render", action="store_true",
-        help="Force full 9:16 vertical re-frame render instead of fast stream-copy.",
-    )
-    parser.add_argument(
         "--render", action="store_true",
         help="Also encode the top clips to vertical MP4 with burned captions "
              "(requires ffmpeg).",
@@ -166,43 +153,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return EXIT_BAD_USAGE
 
-    if args.trim_json:
-        if not args.source and not args.demo:
-            print("Error: --source media path or --demo is required when using --trim-json", file=sys.stderr)
-            return EXIT_BAD_USAGE
-
-        from src.providers.trimmer import ClipTrimmer
-
-        trimmer = ClipTrimmer()
-        source_media = args.source
-        if args.demo:
-            source_media = str(settings.cache_dir / "synthetic_demo.mp4")
-
-        fast_cut = not args.full_render
-        print(f"--- FAST JSON BATCH TRIMMER ---")
-        print(f"  Source Media : {source_media}")
-        print(f"  JSON Input   : {args.trim_json}")
-        print(f"  Cut Mode     : {'Fast Stream-Copy (-c copy)' if fast_cut else 'Vertical Reframe (9:16)'}")
-        print()
-
-        try:
-            trimmed = trimmer.trim_all_from_json(
-                media_path=source_media,
-                json_input=args.trim_json,
-                fast_mode=fast_cut,
-            )
-            print(f"Successfully trimmed {len(trimmed)} clip(s) to {settings.render_dir}:")
-            for item in trimmed:
-                path = item.get("rendered_file_path") or item.get("error")
-                print(f"  * [{item.get('id', 'clip')}] {item.get('title', 'Clip')}: {path}")
-            return EXIT_OK
-        except Exception as exc:
-            print(f"Error during JSON trimming: {exc}", file=sys.stderr)
-            return EXIT_PIPELINE_ERROR
-
     # Imported here so --help works without pulling in langgraph.
     from src.graph.workflow import VideoEditorPipeline
-
 
     pipeline = VideoEditorPipeline(use_checkpointer=not args.no_checkpoint)
     state = pipeline.run(

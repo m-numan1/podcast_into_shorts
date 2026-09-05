@@ -30,7 +30,7 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 
-# Optional: local Whisper transcription. Pulls ~2 GB of PyTorch.
+# Optional: local transcription via faster-whisper. No PyTorch.
 # Without it you need a YouTube URL that has captions.
 pip install -r requirements-ml.txt
 ```
@@ -81,8 +81,10 @@ Exit codes: `0` success, `1` pipeline error, `2` no clips produced, `3` bad usag
 1. **download** — yt-dlp or local file. Duration comes from `ffprobe`, never a
    placeholder.
 2. **extract audio** — 16 kHz mono WAV.
-3. **transcribe** — YouTube captions if available, else local Whisper. Raw
-   fragments are merged into sentence units.
+3. **transcribe** — YouTube captions if available, else local
+   [faster-whisper](https://github.com/SYSTRAN/faster-whisper). Raw
+   fragments are merged into sentence units, with word-level timings kept
+   for burned captions.
 4. **segment** — group units into topic chunks (see
    [Segmentation](#segmentation-why-it-works-this-way)).
 5. **index** — embed chunks; powers near-duplicate detection.
@@ -164,7 +166,7 @@ See `.env.example` — it documents every option. Frequently useful:
 |---|---|---|
 | `DEFAULT_LLM_PROVIDER` | `heuristic` | `openai`, `gemini`, or `heuristic` |
 | `EMBEDDING_BACKEND` | `lexical` | `lexical` (offline), `openai`, `gemini` |
-| `WHISPER_MODEL` | `base` | `tiny`…`large` |
+| `WHISPER_MODEL` | `medium.en` | `tiny`…`large-v3`, or an `.en` variant |
 | `MIN/MAX_CLIP_DURATION_SEC` | 15 / 90 | Clip length window |
 | `CANDIDATE_SHORTLIST_SIZE` | 40 | Caps evaluation cost (×6 agents) |
 | `RENDER_MODE` | `blur_pad` | `blur_pad` or `crop` |
