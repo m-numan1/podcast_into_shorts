@@ -25,6 +25,7 @@ from src.providers.audio import AudioProcessorProvider
 from src.providers.downloader import MediaDownloaderProvider
 from src.providers.llm import LLMProvider
 from src.providers.transcriber import TranscriberProvider
+from src.schema.state import EditorState
 
 
 class TestDownloaderNeverFabricates:
@@ -159,3 +160,47 @@ class TestLLMNeverFabricates:
         literals = code_string_literals("src/providers/llm.py")
         assert not any("8.8" in text for text in literals)
         assert not any("High-impact narrative shift" in text for text in literals)
+
+
+class TestFailedRunsAreNotLabelledFixture:
+    """A run that failed before node 3 is not synthetic fixture data.
+
+    `provenance()` defaulted both sources to "fixture" when they were unset.
+    Those fields are None until the stage that sets them succeeds, so any run
+    that failed early stamped itself SYNTHETIC FIXTURE DATA -- a real local MP4
+    that failed at transcription printed "these results describe a bundled
+    fixture, not real media". That is exactly the mislabelling the provenance
+    record exists to prevent.
+    """
+
+    def test_unset_sources_report_unavailable_not_fixture(self):
+        state = EditorState(source="episode.mp3", error="boom", failed_stage="download")
+        provenance = state.provenance()
+
+        assert provenance.media_source == "unavailable"
+        assert provenance.transcript_source == "unavailable"
+        assert not provenance.is_synthetic
+        assert "SYNTHETIC" not in provenance.banner()
+
+    def test_a_real_source_that_failed_later_keeps_its_real_media_source(self):
+        """Node 1 succeeded, node 3 did not. Only the transcript is unknown."""
+        state = EditorState(
+            source="episode.mp4",
+            media_source="local_file",
+            error="no transcription backend",
+            failed_stage="transcribe",
+        )
+        provenance = state.provenance()
+
+        assert provenance.media_source == "local_file"
+        assert provenance.transcript_source == "unavailable"
+        assert not provenance.is_synthetic
+
+    def test_demo_mode_is_still_labelled_fixture(self):
+        state = EditorState(
+            demo_mode=True, media_source="fixture", transcript_source="fixture"
+        )
+        provenance = state.provenance()
+
+        assert provenance.is_synthetic
+        assert "SYNTHETIC FIXTURE DATA" in provenance.banner()

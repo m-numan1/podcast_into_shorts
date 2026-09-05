@@ -81,8 +81,7 @@ def run(
         proc = subprocess.run(
             args,
             check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
             cwd=str(cwd) if cwd is not None else None,
         )

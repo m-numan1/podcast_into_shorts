@@ -9,8 +9,9 @@ merge reducer (see src/schema/state.py).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any
 
 from config.settings import settings
 from src.agents.editors import AGENTS, EditorAgent, evaluate

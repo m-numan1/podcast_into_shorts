@@ -35,6 +35,7 @@ from src.schema.clips import (
 )
 from src.utils.logging_config import get_logger
 from src.utils.metrics import overlap_ratio, seconds_to_timestamp
+from src.utils.text_cleaner import clean_transcript_text, is_backchannel
 
 log = get_logger(__name__)
 
@@ -134,6 +135,10 @@ def first_substantial_sentence(text: str, min_words: int = 5) -> str:
     those forced a fallback to frequency-ranked keywords, which reads as word
     salad ("Single Build Developer"). Skipping to the first substantial sentence
     keeps titles readable without a model.
+
+    The backchannel test is the same predicate `candidates.py` uses to trim
+    those openers off the clip itself, so a title and its clip agree on what
+    counts as content.
     """
     text = text.strip()
     if not text:
@@ -142,7 +147,7 @@ def first_substantial_sentence(text: str, min_words: int = 5) -> str:
     if not sentences:
         return ""
     for sentence in sentences:
-        if len(sentence.split()) >= min_words:
+        if len(sentence.split()) >= min_words and not is_backchannel(sentence):
             return sentence
     return max(sentences, key=lambda s: len(s.split()))
 
@@ -252,9 +257,6 @@ PACKAGING_SYSTEM = (
     "concrete; never use generic filler like 'you won't believe' or 'this "
     "changes everything'. Every claim must be supported by the transcript."
 )
-
-
-from src.utils.text_cleaner import clean_transcript_text
 
 
 def package_clip(
