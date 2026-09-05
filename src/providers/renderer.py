@@ -33,6 +33,28 @@ WORDS_PER_CUE = 3
 MAX_CUE_SECONDS = 2.5
 ASS_UNSAFE_RE = re.compile(r"[{}\\]")
 
+# Colour of the currently-spoken word. ASS colours are &HBBGGRR -- byte order
+# reversed from HTML. This is #FFE066, a saturated yellow chosen because it
+# stays legible against both bright and dark footage, where the project's
+# indigo accent (#6366F1) does not.
+HIGHLIGHT_COLOUR = "&H66E0FF&"
+BASE_COLOUR = "&HFFFFFF&"
+
+
+@dataclass(frozen=True)
+class CaptionCue:
+    """A caption cue that remembers the timing of each word inside it.
+
+    Times are relative to the clip start. `words` is what makes word-level
+    highlighting possible; it is empty when the source had no usable word
+    timings, and rendering falls back to a static cue for that cue alone.
+    """
+
+    start: float
+    end: float
+    text: str
+    words: tuple[tuple[str, float, float], ...] = ()
+
 
 @dataclass(frozen=True)
 class RenderResult:
@@ -57,30 +79,51 @@ def _ass_escape(text: str) -> str:
 
 
 def escape_filter_path(path: Path) -> str:
-    """Escape a path for use inside an ffmpeg filter argument.
+    """Escape a path for use inside a single-quoted ffmpeg filter argument.
 
     Windows paths break the filter parser twice over: backslashes are escapes
     and the drive colon separates filter options. Both must be neutralised.
+
+    Apostrophes need close-escape-reopen (`'\\''`), not a backslash. ffmpeg
+    performs no escaping inside a single-quoted section, so the `\\'` this used
+    to emit ended the quote early and the rest of the filtergraph -- including
+    the `[vout]` pad label -- was swallowed into the filename:
+
+        Unable to open .../My Podcasts Folder/out/clip.ass[vout]
+        Error initializing filters
+
+    That is fixed here. Note the separate, harder limitation measured against
+    ffmpeg 9.0: an apostrophe cannot be carried through the filter argument at
+    all. Every quoted form (`'\\''`, `'\\\\''`, `'\\'\\''`) parses cleanly but
+    silently *drops* the apostrophe, and every unquoted form fails with
+    "Invalid argument". `ClipRenderer` therefore never passes a directory to
+    the subtitles filter -- see `_run_ffmpeg`.
     """
     text = str(path).replace("\\", "/")
     text = text.replace(":", r"\:")
-    text = text.replace("'", r"\'")
+    # Close the quoted section, emit an escaped literal quote, reopen it.
+    text = text.replace("'", r"'\''")
     text = text.replace("[", r"\[").replace("]", r"\]")
     text = text.replace(",", r"\,")
     return text
 
 
-def build_caption_cues(
+def group_caption_cues(
     words: list[WordTimestamp],
     clip_start: float,
     clip_end: float,
-) -> list[tuple[float, float, str]]:
-    """Group words into caption cues, with times relative to the clip start."""
+) -> list[CaptionCue]:
+    """Group words into caption cues, keeping each word's own timing.
+
+    Grouping is unchanged -- flush at WORDS_PER_CUE words or MAX_CUE_SECONDS --
+    but the per-word times are carried through so the ASS writer can highlight
+    the word being spoken.
+    """
     inside = [
         w for w in words
         if w.end > clip_start and w.start < clip_end and w.word.strip()
     ]
-    cues: list[tuple[float, float, str]] = []
+    cues: list[CaptionCue] = []
     group: list[WordTimestamp] = []
 
     def flush() -> None:
@@ -89,7 +132,17 @@ def build_caption_cues(
         start = max(0.0, group[0].start - clip_start)
         end = max(start + 0.2, min(group[-1].end, clip_end) - clip_start)
         text = " ".join(w.word.strip() for w in group)
-        cues.append((start, end, text))
+        # Clamp each word into the cue so a highlight can never precede the
+        # cue's own start or outlive its end.
+        spans = tuple(
+            (
+                w.word.strip(),
+                min(max(w.start - clip_start, start), end),
+                min(max(w.end - clip_start, start), end),
+            )
+            for w in group
+        )
+        cues.append(CaptionCue(start=start, end=end, text=text, words=spans))
 
     for word in inside:
         if group:
@@ -102,14 +155,83 @@ def build_caption_cues(
     return cues
 
 
+def build_caption_cues(
+    words: list[WordTimestamp],
+    clip_start: float,
+    clip_end: float,
+) -> list[tuple[float, float, str]]:
+    """Cues as plain (start, end, text) tuples, without word timings."""
+    return [(c.start, c.end, c.text) for c in group_caption_cues(words, clip_start, clip_end)]
+
+
+def _cue_dialogue_lines(cue: CaptionCue, highlight: bool) -> list[str]:
+    """Dialogue events for one cue.
+
+    Static: a single event showing the whole cue.
+
+    Highlighted: one event per word, each showing the *whole* cue with only the
+    active word recoloured. Discrete per-word events are used rather than ASS
+    `\\k` karaoke tags because `\\k` renders as a progressive colour wipe whose
+    appearance varies between libass builds, while an explicit `\\c` override
+    gives the crisp word-pop the format actually expects.
+
+    Events are made contiguous -- each word runs until the next one starts --
+    so the caption never blinks out in the gaps between word timings.
+    """
+    escaped_cue = _ass_escape(cue.text)
+    if not escaped_cue:
+        return []
+
+    escaped_words = [_ass_escape(word) for word, _, _ in cue.words]
+    usable = highlight and len(cue.words) > 1 and all(escaped_words)
+    if not usable:
+        return [
+            f"Dialogue: 0,{_ass_time(cue.start)},{_ass_time(cue.end)},"
+            f"Caption,,0,0,0,,{escaped_cue}"
+        ]
+
+    starts = [max(cue.start, span[1]) for span in cue.words]
+    # Monotonic starts: a jittered word timing must not produce a zero- or
+    # negative-length event that libass would drop.
+    for i in range(1, len(starts)):
+        starts[i] = max(starts[i], starts[i - 1])
+
+    lines: list[str] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else cue.end
+        if end <= start:
+            continue
+        text = " ".join(
+            f"{{\\c{HIGHLIGHT_COLOUR}}}{word}{{\\c{BASE_COLOUR}}}"
+            if position == index
+            else word
+            for position, word in enumerate(escaped_words)
+        )
+        lines.append(
+            f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{text}"
+        )
+    return lines or [
+        f"Dialogue: 0,{_ass_time(cue.start)},{_ass_time(cue.end)},"
+        f"Caption,,0,0,0,,{escaped_cue}"
+    ]
+
+
+def _as_cues(
+    cues: list[tuple[float, float, str]] | list[CaptionCue],
+) -> list[CaptionCue]:
+    """Accept either the plain tuple form or the word-aware form."""
+    return [c if isinstance(c, CaptionCue) else CaptionCue(*c) for c in cues]
+
+
 def write_ass_file(
-    cues: list[tuple[float, float, str]],
+    cues: list[tuple[float, float, str]] | list[CaptionCue],
     path: Path,
     width: int,
     height: int,
     *,
     hook_text: str | None = None,
     hook_duration: float = 3.5,
+    highlight: bool | None = None,
 ) -> Path:
     """Write an ASS subtitle file styled for vertical/multi-format video with top hook banner."""
     font_size = max(26, int(height * 0.038))
@@ -141,11 +263,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 1,0:00:00.00,{_ass_time(hook_duration)},HookHeader,,0,0,0,,{_ass_escape(hook_text)}"
         )
 
-    lines.extend([
-        f"Dialogue: 0,{_ass_time(s)},{_ass_time(e)},Caption,,0,0,0,,{_ass_escape(t)}"
-        for s, e, t in cues
-        if _ass_escape(t)
-    ])
+    use_highlight = (
+        settings.render_caption_highlight if highlight is None else highlight
+    )
+    for cue in _as_cues(cues):
+        lines.extend(_cue_dialogue_lines(cue, use_highlight))
+
     path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -156,7 +279,20 @@ class ClipRenderer:
         self.enable_hook_banner = enable_hook_banner
         self.width, self.height = settings.resolve_dimensions(self.aspect_ratio)
 
-    def _video_filter(self, has_captions: bool, ass_path: Path | None) -> str:
+    def _subtitles_clause(self, ass_name: str | None) -> str:
+        """Chain the subtitles filter, or a passthrough when there are none.
+
+        `ass_name` is a bare filename, never a path: ffmpeg is run with its cwd
+        set to the directory holding it. A directory component cannot be
+        escaped safely once it contains an apostrophe (see
+        `escape_filter_path`), and clip ids are already sanitised to
+        [0-9A-Za-z_-], so the bare name is always representable.
+        """
+        if not ass_name:
+            return ";[v]null[vout]"
+        return f";[v]subtitles='{escape_filter_path(Path(ass_name))}'[vout]"
+
+    def _video_filter(self, has_captions: bool, ass_name: str | None) -> str:
         w, h = self.width, self.height
         if settings.render_mode == "crop":
             base = (
@@ -173,24 +309,16 @@ class ClipRenderer:
                 f"[fg]scale={w}:-2:force_original_aspect_ratio=decrease[fgs];"
                 f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
             )
-        if has_captions and ass_path is not None:
-            base += f";[v]subtitles='{escape_filter_path(ass_path)}'[vout]"
-        else:
-            base += ";[v]null[vout]"
-        return base
+        return base + self._subtitles_clause(ass_name if has_captions else None)
 
-    def _audio_only_filter(self, has_captions: bool, ass_path: Path | None) -> str:
+    def _audio_only_filter(self, has_captions: bool, ass_name: str | None) -> str:
         w, h = self.width, self.height
         wave_h = int(h * 0.18)
         base = (
             f"[0:a]showwaves=s={w}x{wave_h}:mode=cline:rate=25:colors=0x6366F1[wave];"
             f"[1:v][wave]overlay=0:(H-h)/2:shortest=1,setsar=1[v]"
         )
-        if has_captions and ass_path is not None:
-            base += f";[v]subtitles='{escape_filter_path(ass_path)}'[vout]"
-        else:
-            base += ";[v]null[vout]"
-        return base
+        return base + self._subtitles_clause(ass_name if has_captions else None)
 
     def render(
         self,
@@ -220,8 +348,13 @@ class ClipRenderer:
         if not source.exists():
             raise RenderError(f"Source media missing for render: {source}")
 
-        out_dir = output_dir or settings.render_dir
+        out_dir = (output_dir or settings.render_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Absolute: ffmpeg runs with cwd=out_dir so the subtitles filter can
+        # reference the .ass by bare name, which means every other path in the
+        # argv must not depend on the caller's cwd.
+        out_dir = out_dir.resolve()
+        source = source.resolve()
         safe_id = re.sub(r"[^0-9A-Za-z_-]", "_", clip.id)
         out_path = out_dir / f"{safe_id}.mp4"
 
@@ -238,10 +371,10 @@ class ClipRenderer:
             )
 
         ass_path: Path | None = None
-        cues: list[tuple[float, float, str]] = []
+        cues: list[CaptionCue] = []
         if settings.render_burn_captions or hook_text:
             if settings.render_burn_captions:
-                cues = build_caption_cues(all_words, start, end)
+                cues = group_caption_cues(all_words, start, end)
             if cues or hook_text:
                 ass_path = write_ass_file(
                     cues,
@@ -257,8 +390,9 @@ class ClipRenderer:
         args += ["-accurate_seek", "-ss", f"{start:.3f}", "-t", f"{duration:.3f}"]
         args += ["-i", str(source)]
 
+        ass_name = ass_path.name if ass_path is not None else None
         if has_video:
-            filter_complex = self._video_filter(bool(ass_path), ass_path)
+            filter_complex = self._video_filter(bool(ass_name), ass_name)
         else:
             # A synthetic background track for audio-only sources.
             args += [
@@ -266,7 +400,7 @@ class ClipRenderer:
                 "-t", f"{duration:.3f}",
                 "-i", f"color=c=0x0B0F19:s={self.width}x{self.height}:r=25",
             ]
-            filter_complex = self._audio_only_filter(bool(ass_path), ass_path)
+            filter_complex = self._audio_only_filter(bool(ass_name), ass_name)
 
         args += [
             "-filter_complex", filter_complex,
@@ -288,6 +422,8 @@ class ClipRenderer:
             args,
             error_cls=RenderError,
             what=f"render of {clip.id}",
+            # So the subtitles filter can name the .ass without a directory.
+            cwd=out_dir,
         )
 
         if not out_path.exists() or out_path.stat().st_size == 0:

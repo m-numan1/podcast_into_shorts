@@ -240,15 +240,18 @@ class TranscriberProvider:
         )
         segments: list[TranscriptSegment] = []
         for idx, seg in enumerate(result.get("segments", [])):
+            # sentence_case=False: these are individual words, not sentences.
+            # Capitalising each one rendered every burned caption as
+            # "The Quick Brown Fox" and turned "iPhone" into "IPhone".
             words = [
                 WordTimestamp(
-                    word=clean_transcript_text(w.get("word", "")).strip(),
+                    word=clean_transcript_text(w.get("word", ""), sentence_case=False).strip(),
                     start=float(w.get("start", 0.0) or 0.0),
                     end=float(w.get("end", 0.0) or 0.0),
                     confidence=float(w.get("probability", 1.0) or 1.0),
                 )
                 for w in seg.get("words", [])
-                if clean_transcript_text(w.get("word", "")).strip()
+                if clean_transcript_text(w.get("word", ""), sentence_case=False).strip()
             ]
             raw_text = (seg.get("text") or "").strip()
             text = clean_transcript_text(raw_text)
