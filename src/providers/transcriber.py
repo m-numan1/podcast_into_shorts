@@ -222,21 +222,76 @@ class TranscriberProvider:
 
     @staticmethod
     def _fetch_captions(api_cls, video_id: str):
-        """Support both youtube-transcript-api v1.x and v0.6.x call shapes."""
+        """Support both youtube-transcript-api v1.x and v0.6.x call shapes with multilingual fallback."""
+        target_lang = settings.transcript_language
+        preferred_langs = [target_lang] if target_lang else ["en"]
         errors = []
+
+        # 1. Try v1.x transcript listing & intelligent language selection
         try:
-            return api_cls().fetch(video_id)  # v1.x instance API
+            api = api_cls() if callable(api_cls) else api_cls
+            if hasattr(api, "list"):
+                transcript_list = api.list(video_id)
+                transcript = None
+                try:
+                    transcript = transcript_list.find_transcript(preferred_langs)
+                except Exception:
+                    # Fallback to any available transcript (prefer manual over generated)
+                    manual = [t for t in transcript_list if not getattr(t, "is_generated", False)]
+                    if manual:
+                        transcript = manual[0]
+                    else:
+                        generated = [t for t in transcript_list if getattr(t, "is_generated", False)]
+                        if generated:
+                            transcript = generated[0]
+                        else:
+                            transcript = next(iter(transcript_list), None)
+
+                if transcript is not None:
+                    log.info(
+                        "Found YouTube caption track: language=%s (%s, generated=%s)",
+                        getattr(transcript, "language", "unknown"),
+                        getattr(transcript, "language_code", "?"),
+                        getattr(transcript, "is_generated", False),
+                    )
+                    return transcript.fetch()
         except AttributeError as exc:
-            errors.append(f"v1 fetch: {exc}")
+            errors.append(f"v1 list: {exc}")
         except Exception as exc:
-            errors.append(f"v1 fetch: {type(exc).__name__}: {exc}")
+            errors.append(f"v1 list: {type(exc).__name__}: {exc}")
+
+        # 2. Try v0.6.x list_transcripts if available
         try:
-            return api_cls.get_transcript(video_id)  # v0.6.x classmethod
+            if hasattr(api_cls, "list_transcripts"):
+                transcript_list = api_cls.list_transcripts(video_id)
+                transcript = None
+                try:
+                    transcript = transcript_list.find_transcript(preferred_langs)
+                except Exception:
+                    transcript = next(iter(transcript_list), None)
+                if transcript is not None:
+                    return transcript.fetch()
+        except Exception as exc:
+            errors.append(f"v0 list_transcripts: {type(exc).__name__}: {exc}")
+
+        # 3. Direct fetch attempts
+        try:
+            api = api_cls() if callable(api_cls) else api_cls
+            if hasattr(api, "fetch"):
+                return api.fetch(video_id, languages=preferred_langs)
+        except Exception as exc:
+            errors.append(f"v1 direct fetch: {type(exc).__name__}: {exc}")
+
+        try:
+            if hasattr(api_cls, "get_transcript"):
+                return api_cls.get_transcript(video_id, languages=preferred_langs)
         except Exception as exc:
             errors.append(f"v0 get_transcript: {type(exc).__name__}: {exc}")
+
         raise TranscriptionError(
             f"No caption track retrievable for video {video_id}: " + "; ".join(errors)
         )
+
 
     def _from_whisper(self, audio_path: str) -> list[TranscriptSegment]:
         model = _load_whisper_model(settings.whisper_model)
