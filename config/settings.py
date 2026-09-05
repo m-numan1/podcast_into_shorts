@@ -75,10 +75,9 @@ class Settings(BaseSettings):
 
     # ---- Transcription ----
     # A faster-whisper (CTranslate2) model name: tiny/base/small/medium/large-v3,
-    # optionally with an .en suffix for the English-only variants. medium.en is
-    # the accuracy/speed sweet spot for English podcasts; faster-whisper makes
-    # it affordable on CPU where openai-whisper's medium was not.
-    whisper_model: str = "medium.en"
+    # optionally with an .en suffix for English-only variants. "small" or "medium"
+    # provides fast multilingual auto-detection on CPU/GPU without restricting to English.
+    whisper_model: str = "small"
     # None means auto-detect. An empty env var is normalised to None below.
     transcript_language: str | None = None
     enable_diarization: bool = False
