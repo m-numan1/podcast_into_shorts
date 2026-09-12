@@ -362,6 +362,30 @@ def deduplicate(
     return kept
 
 
+def calculate_dynamic_clip_bounds(
+    duration_sec: float | None,
+    min_clips: int | None = None,
+    max_clips: int | None = None,
+) -> tuple[int, int, int]:
+    """Calculate dynamic (target_min, target_ideal, target_max) based on media duration.
+
+    - Short videos (< 5 mins): 2-3 clips
+    - Medium videos (~15 mins): 4-6 clips
+    - Long podcasts (45-60+ mins): 8-15 clips
+    """
+    configured_min = min_clips if min_clips is not None else settings.target_clip_count_min
+    configured_max = max_clips if max_clips is not None else settings.target_clip_count_max
+
+    if not getattr(settings, "dynamic_clip_scaling", True) or duration_sec is None or duration_sec <= 0:
+        return configured_min, configured_max, configured_max
+
+    # 1 clip per ~150s (2.5 mins) represents natural high quality highlights
+    ideal_count = max(1, int(round(duration_sec / 150.0)))
+    effective_max = min(configured_max, max(ideal_count + 1, int(round(duration_sec / 100.0))))
+    effective_min = min(configured_min, max(1, min(ideal_count, 2)))
+    return effective_min, ideal_count, effective_max
+
+
 def synthesise(
     candidates: list[CandidateClip],
     evaluations: dict[str, dict[str, ClipEvaluation]],
@@ -370,6 +394,7 @@ def synthesise(
     llm: LLMProvider | None,
     provenance: DataProvenance,
     near_duplicate_pairs: set[tuple[str, str]] | None = None,
+    source_duration: float | None = None,
 ) -> tuple[list[FinalClipOutput], list[str]]:
     """Rank, deduplicate, cap and package. Returns (clips, warnings)."""
     warnings: list[str] = []
@@ -396,8 +421,57 @@ def synthesise(
         near_duplicate_pairs=near_duplicate_pairs,
     )
 
-    # B13: honour the configured range instead of a hardcoded 15.
-    selected = unique[: settings.target_clip_count_max]
+    # Dynamic scaling based on video duration
+    dur = source_duration
+    if (dur is None or dur <= 0) and candidates:
+        dur = max(c.end_time for c in candidates)
+    effective_min, target_ideal, effective_max = calculate_dynamic_clip_bounds(dur)
+
+    selected: list[RankedCandidate] = []
+    if unique:
+        top_score = unique[0].composite
+        configured_floor = getattr(settings, "min_clip_quality_score", 0.0)
+
+        # If user explicitly set a floor >= 2.0, respect it directly;
+        # otherwise, auto-calibrate relative to the top candidate score in this video!
+        if configured_floor >= 2.0:
+            quality_cutoff = configured_floor
+        else:
+            # Dynamically set threshold to 75% of top score (clamped at minimum 2.5)
+            quality_cutoff = max(2.5, round(top_score * 0.75, 2))
+
+        prev_score = top_score
+        for item in unique:
+            # 1. Guarantee minimum clip count if candidates exist
+            if len(selected) < effective_min:
+                selected.append(item)
+                prev_score = item.composite
+                continue
+
+            # 2. Never exceed the duration-based hard maximum
+            if len(selected) >= effective_max:
+                break
+
+            # 3. If candidate is noticeably worse than the top highlight in this video, stop
+            if item.composite < quality_cutoff:
+                log.info(
+                    "Dynamic selector stopped at %d clips: candidate %s (score %.2f) "
+                    "below relative cutoff %.2f (top score: %.2f)",
+                    len(selected), item.candidate.id, item.composite, quality_cutoff, top_score,
+                )
+                break
+
+            # 4. Cliff / elbow detection: if ideal count is reached and there is a sharp drop (> 0.6)
+            if len(selected) >= target_ideal and (prev_score - item.composite) > 0.6:
+                log.info(
+                    "Dynamic selector detected score drop from %.2f to %.2f after ideal count %d; stopping.",
+                    prev_score, item.composite, target_ideal,
+                )
+                break
+
+            selected.append(item)
+            prev_score = item.composite
+
     if len(selected) < settings.target_clip_count_min:
         warnings.append(
             f"Produced {len(selected)} clip(s), fewer than the configured minimum of "

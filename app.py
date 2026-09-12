@@ -156,6 +156,16 @@ HTML_PAGE = """<!DOCTYPE html>
           <option value="16:9">16:9 Landscape (YouTube Highlights)</option>
         </select>
       </label>
+      <label for="transcriptLang">Audio Language:
+        <select id="transcriptLang" style="background:#1e293b; color:#fff; border:1px solid #334155; padding:.3rem .5rem; border-radius:6px; font-family:inherit; margin-left:.3rem;">
+          <option value="" selected>Auto-detect</option>
+          <option value="ur">Urdu (اردو)</option>
+          <option value="hi">Hindi (हिंदी)</option>
+          <option value="en">English</option>
+          <option value="ar">Arabic (العربية)</option>
+          <option value="es">Spanish</option>
+        </select>
+      </label>
     </div>
     <div class="quick-bar">
       <span class="quick-label">⚡ Direct Actions:</span>
@@ -534,6 +544,7 @@ goBtn.addEventListener("click", async () => {
         render: $("render").checked,
         aspect_ratio: $("aspectRatio").value,
         enable_hook_banner: $("enableHookBanner").checked,
+        language: $("transcriptLang").value || undefined,
       }),
     });
     started = await res.json();
@@ -595,6 +606,7 @@ def _run_job(
     render: bool,
     aspect_ratio: str = "9:16",
     enable_hook_banner: bool = True,
+    language: str | None = None,
 ) -> None:
     """Worker thread: run the pipeline and store the result."""
     from src.graph.workflow import VideoEditorPipeline
@@ -609,10 +621,12 @@ def _run_job(
 
     try:
         model_info = _get_model_info()
-        print(f"\n[ANALYSIS] Starting job {job_id} using: {model_info}", flush=True)
+        if language is not None:
+            settings.transcript_language = language.strip() or None
+        print(f"\n[ANALYSIS] Starting job {job_id} using: {model_info} (language={settings.transcript_language or 'auto'})", flush=True)
         log.info(
-            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s, model=%s)",
-            job_id, source, demo, render, model_info, aspect_ratio
+            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s, language=%s, model=%s)",
+            job_id, source, demo, render, aspect_ratio, settings.transcript_language or "auto", model_info
         )
         settings.aspect_ratio = aspect_ratio  # type: ignore[assignment]
         settings.enable_hook_banner = enable_hook_banner
@@ -850,8 +864,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     resolved = trimmer._resolve_media_path(data.get("media_file_path") or data.get("source") or None)
                     if not data.get("media_file_path"):
                         data["media_file_path"] = str(resolved)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.debug("Could not auto-resolve media path for %s: %s", filename, exc)
                 self._send_json(data)
                 return
             except Exception as exc:
@@ -895,6 +909,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         aspect_ratio = str(payload.get("aspect_ratio") or "9:16").strip()
         enable_hook_banner = bool(payload.get("enable_hook_banner", True))
+        language = payload.get("language")
+        if language is not None:
+            language = str(language).strip() or None
 
         if route.path == "/api/render-card":
             clip_data = payload.get("clip")
@@ -964,7 +981,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # server stays responsive.
         threading.Thread(
             target=_run_job,
-            args=(job_id, source, demo, render, aspect_ratio, enable_hook_banner),
+            args=(job_id, source, demo, render, aspect_ratio, enable_hook_banner, language),
             daemon=True,
         ).start()
         self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)

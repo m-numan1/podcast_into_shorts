@@ -162,12 +162,13 @@ class TestAppModelInfo:
         assert "LLM model" in info
         assert "gemini" in info
 
-    def test_run_job_signature_accepts_six_arguments(self):
+    def test_run_job_signature_accepts_arguments(self):
         import inspect
         import app
         sig = inspect.signature(app._run_job)
-        assert len(sig.parameters) == 6
+        assert len(sig.parameters) == 7
         assert "aspect_ratio" in sig.parameters
         assert "enable_hook_banner" in sig.parameters
+        assert "language" in sig.parameters
 
 

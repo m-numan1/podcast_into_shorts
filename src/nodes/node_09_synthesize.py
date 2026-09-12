@@ -52,6 +52,7 @@ def node_09_synthesize(state: EditorState) -> dict[str, Any]:
 
     provenance = state.provenance().model_copy(update={"scoring_mode": scoring_mode})
 
+    dur = state.duration_seconds or (state.sentence_units[-1].end if state.sentence_units else None)
     clips, warnings = synthesise(
         state.candidate_clips,
         state.agent_evaluations,
@@ -59,6 +60,7 @@ def node_09_synthesize(state: EditorState) -> dict[str, Any]:
         llm=llm,
         provenance=provenance,
         near_duplicate_pairs=_near_duplicate_pairs(state),
+        source_duration=dur,
     )
 
     if not clips:
