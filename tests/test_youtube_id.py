@@ -81,3 +81,63 @@ class TestIsUrl:
     ])
     def test_rejects_non_urls(self, value):
         assert not is_url(value)
+
+
+def test_fetch_captions_transliterates_hi_for_ur_and_rejects_other(monkeypatch):
+    """When target_lang is 'ur', accept 'hi' for transliteration; for 'es', reject it."""
+    from config.settings import settings
+    from src.errors import TranscriptionError
+    from src.providers.transcriber import TranscriberProvider
+
+    class MockTranscript:
+        language = "Hindi"
+        language_code = "hi"
+        is_generated = True
+        def fetch(self):
+            return [{"text": "नमस्ते", "start": 0.0, "duration": 2.0}]
+
+    class MockTranscriptList:
+        def find_transcript(self, preferred_langs):
+            if "ur" in preferred_langs or "es" in preferred_langs:
+                raise Exception("Not found")
+            if "hi" in preferred_langs:
+                return MockTranscript()
+            raise Exception("Not found")
+
+    class MockApi:
+        @classmethod
+        def list(cls, video_id):
+            return MockTranscriptList()
+
+    # For Spanish, Hindi track must be rejected
+    monkeypatch.setattr(settings, "transcript_language", "es")
+    with pytest.raises(TranscriptionError):
+        TranscriberProvider._fetch_captions(MockApi, "dQw4w9WgXcQ")
+
+    # For Urdu, Hindi track is accepted for transliteration
+    monkeypatch.setattr(settings, "transcript_language", "ur")
+    captions = TranscriberProvider._fetch_captions(MockApi, "dQw4w9WgXcQ")
+    assert len(captions) == 1
+    assert captions[0]["text"] == "नमस्ते"
+
+
+def test_from_youtube_captions_transliterates_devanagari_when_target_is_ur(monkeypatch):
+    from config.settings import settings
+    from src.providers.transcriber import TranscriberProvider
+
+    monkeypatch.setattr(settings, "transcript_language", "ur")
+    provider = TranscriberProvider()
+
+    # Mock _fetch_captions to return Devanagari Hindi text
+    monkeypatch.setattr(
+        provider,
+        "_fetch_captions",
+        lambda api, vid: [{"text": "सामना करना पड़ेगा?", "start": 0.0, "duration": 2.5}],
+    )
+
+    segments = provider._from_youtube_captions("dQw4w9WgXcQ")
+    assert len(segments) == 1
+    # Check that Urdu text was produced instead of Devanagari
+    assert "सामना" not in segments[0].text
+    assert "سامنا" in segments[0].text
+    assert "پڑے گا" in segments[0].text

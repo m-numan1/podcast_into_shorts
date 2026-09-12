@@ -92,11 +92,14 @@ class Settings(BaseSettings):
     segment_max_duration_sec: float = Field(default=120.0, gt=0)
 
     # ---- Clip constraints ----
-    target_clip_count_min: int = Field(default=5, ge=1)
+    target_clip_count_min: int = Field(default=2, ge=1)
     target_clip_count_max: int = Field(default=15, ge=1)
-    min_clip_duration_sec: float = Field(default=15.0, gt=0)
+    min_clip_duration_sec: float = Field(default=30.0, gt=0)
     max_clip_duration_sec: float = Field(default=90.0, gt=0)
     optimal_clip_duration_sec: float = Field(default=45.0, gt=0)
+    dynamic_clip_scaling: bool = True
+    # Set to 0.0 for dynamic self-calibrating quality cutoff relative to video's top score
+    min_clip_quality_score: float = Field(default=0.0, ge=0.0, le=10.0)
     # Two clips are duplicates when their intersection-over-shorter exceeds
     # this. Symmetric, unlike the old candidate-duration-only comparison.
     dedup_overlap_threshold: float = Field(default=0.5, ge=0.0, le=1.0)

@@ -201,9 +201,16 @@ class TranscriberProvider:
             ) from exc
 
         raw = self._fetch_captions(YouTubeTranscriptApi, video_id)
+        target_lang = settings.transcript_language
+        from src.utils.transliteration import devanagari_to_urdu
+
         segments: list[TranscriptSegment] = []
         for item in raw:
             raw_text = str(self._field(item, "text", "") or "").replace("\n", " ").strip()
+            # If target language is Urdu and YouTube provided Hindi/Devanagari text,
+            # auto-transliterate to natural Urdu Nastaliq (Perso-Arabic) script.
+            if target_lang == "ur":
+                raw_text = devanagari_to_urdu(raw_text)
             text = clean_transcript_text(raw_text)
             if not text:
                 continue
@@ -236,16 +243,32 @@ class TranscriberProvider:
                 try:
                     transcript = transcript_list.find_transcript(preferred_langs)
                 except Exception:
-                    # Fallback to any available transcript (prefer manual over generated)
-                    manual = [t for t in transcript_list if not getattr(t, "is_generated", False)]
-                    if manual:
-                        transcript = manual[0]
-                    else:
-                        generated = [t for t in transcript_list if getattr(t, "is_generated", False)]
-                        if generated:
-                            transcript = generated[0]
+                    # YouTube auto-generates Hindi captions for Urdu speech. If Urdu was
+                    # requested and no Urdu track exists, accept the Hindi track for transliteration.
+                    if target_lang == "ur":
+                        try:
+                            transcript = transcript_list.find_transcript(["hi"])
+                            if transcript is not None:
+                                log.info(
+                                    "Found YouTube Hindi caption track for Urdu video; will auto-transliterate to Urdu script."
+                                )
+                        except Exception:
+                            transcript = None
+
+                    if transcript is None:
+                        if target_lang:
+                            # User explicitly requested another language and it was not found
+                            raise
+                        # Fallback to any available transcript (prefer manual over generated)
+                        manual = [t for t in transcript_list if not getattr(t, "is_generated", False)]
+                        if manual:
+                            transcript = manual[0]
                         else:
-                            transcript = next(iter(transcript_list), None)
+                            generated = [t for t in transcript_list if getattr(t, "is_generated", False)]
+                            if generated:
+                                transcript = generated[0]
+                            else:
+                                transcript = next(iter(transcript_list), None)
 
                 if transcript is not None:
                     log.info(
@@ -268,23 +291,32 @@ class TranscriberProvider:
                 try:
                     transcript = transcript_list.find_transcript(preferred_langs)
                 except Exception:
-                    transcript = next(iter(transcript_list), None)
+                    if target_lang == "ur":
+                        try:
+                            transcript = transcript_list.find_transcript(["hi"])
+                        except Exception:
+                            transcript = None
+                    if transcript is None:
+                        if target_lang:
+                            raise
+                        transcript = next(iter(transcript_list), None)
                 if transcript is not None:
                     return transcript.fetch()
         except Exception as exc:
             errors.append(f"v0 list_transcripts: {type(exc).__name__}: {exc}")
 
         # 3. Direct fetch attempts
+        fetch_langs = preferred_langs + (["hi"] if target_lang == "ur" else [])
         try:
             api = api_cls() if callable(api_cls) else api_cls
             if hasattr(api, "fetch"):
-                return api.fetch(video_id, languages=preferred_langs)
+                return api.fetch(video_id, languages=fetch_langs)
         except Exception as exc:
             errors.append(f"v1 direct fetch: {type(exc).__name__}: {exc}")
 
         try:
             if hasattr(api_cls, "get_transcript"):
-                return api_cls.get_transcript(video_id, languages=preferred_langs)
+                return api_cls.get_transcript(video_id, languages=fetch_langs)
         except Exception as exc:
             errors.append(f"v0 get_transcript: {type(exc).__name__}: {exc}")
 
