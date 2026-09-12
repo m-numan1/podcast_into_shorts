@@ -223,6 +223,20 @@ def _as_cues(
     return [c if isinstance(c, CaptionCue) else CaptionCue(*c) for c in cues]
 
 
+def detect_subtitle_font(texts: list[str]) -> str:
+    """Select appropriate font for subtitles based on text script (Urdu, Hindi/Devanagari, or Latin)."""
+    if getattr(settings, "caption_font", ""):
+        return settings.caption_font
+    sample = " ".join(texts)
+    # Urdu / Arabic Unicode blocks
+    if re.search(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]", sample):
+        return "Noto Nastaliq Urdu"
+    # Hindi / Devanagari Unicode blocks
+    if re.search(r"[\u0900-\u097F]", sample):
+        return "Noto Sans Devanagari"
+    return "Arial"
+
+
 def write_ass_file(
     cues: list[tuple[float, float, str]] | list[CaptionCue],
     path: Path,
@@ -232,6 +246,7 @@ def write_ass_file(
     hook_text: str | None = None,
     hook_duration: float = 3.5,
     highlight: bool | None = None,
+    font_name: str | None = None,
 ) -> Path:
     """Write an ASS subtitle file styled for vertical/multi-format video with top hook banner."""
     font_size = max(26, int(height * 0.038))
@@ -242,6 +257,12 @@ def write_ass_file(
     hook_margin_v = int(height * 0.06)
     hook_margin_h = int(width * 0.05)
 
+    resolved_cues = _as_cues(cues)
+    sample_texts = [c.text for c in resolved_cues]
+    if hook_text:
+        sample_texts.append(hook_text)
+    active_font = font_name or detect_subtitle_font(sample_texts)
+
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -251,8 +272,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,Arial,{font_size},&H00FFFFFF,&H000000FF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,1,{max(2, font_size // 12)},2,2,{margin_h},{margin_h},{margin_v},1
-Style: HookHeader,Arial,{hook_font_size},&H00FFFFFF,&H000000FF,&H006366F1,&HA0000000,-1,0,0,0,100,100,0,0,1,{max(2, hook_font_size // 10)},2,8,{hook_margin_h},{hook_margin_h},{hook_margin_v},1
+Style: Caption,{active_font},{font_size},&H00FFFFFF,&H000000FF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,1,{max(2, font_size // 12)},2,2,{margin_h},{margin_h},{margin_v},1
+Style: HookHeader,{active_font},{hook_font_size},&H00FFFFFF,&H000000FF,&H006366F1,&HA0000000,-1,0,0,0,100,100,0,0,1,{max(2, hook_font_size // 10)},2,8,{hook_margin_h},{hook_margin_h},{hook_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -266,7 +287,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     use_highlight = (
         settings.render_caption_highlight if highlight is None else highlight
     )
-    for cue in _as_cues(cues):
+    for cue in resolved_cues:
         lines.extend(_cue_dialogue_lines(cue, use_highlight))
 
     path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
