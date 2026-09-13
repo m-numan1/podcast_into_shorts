@@ -1,8 +1,8 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "Podcast to Shorts AI | Short-Form Video Extractor",
-  description: "Finds self-contained short clips in long-form podcasts and renders vertical 9:16 MP4 shorts with burned-in AI captions.",
+  title: "ClipPulse AI | AI Podcast-to-Shorts Video Clipping Platform",
+  description: "Turn 1-hour long podcasts into viral vertical 9:16 Shorts, Reels & TikToks with AI hook detection, animated subtitles, and dynamic reframing.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

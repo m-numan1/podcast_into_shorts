@@ -742,6 +742,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "scoring_mode": "llm" if settings.uses_llm else "heuristic",
                 "embedding_backend": settings.embedding_backend,
+                "model_name": settings.active_model_name,
+                "provider": settings.default_llm_provider,
             })
             return
 

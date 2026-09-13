@@ -1,4 +1,18 @@
+export type AspectRatio = '9:16' | '1:1' | '16:9';
+
+export type SubtitlePresetId = 'hormozi' | 'capcut' | 'mrbeast' | 'single_word' | 'minimal';
+
+export interface SubtitlePresetOption {
+  id: SubtitlePresetId;
+  name: string;
+  tagline: string;
+  icon: string;
+  badgeColor: string;
+  sampleStyle: string;
+}
+
 export interface ClipItem {
+  id?: string;
   rank: number;
   title: string;
   start_timestamp: string;
@@ -8,13 +22,14 @@ export interface ClipItem {
   overall_score: number;
   virality_score: number;
   confidence_score: number;
-  viewer_retention_prediction: string;
-  start_adjustment_sec: number;
-  end_adjustment_sec: number;
-  one_sentence_summary: string;
+  viewer_retention_prediction?: string;
+  start_adjustment_sec?: number;
+  end_adjustment_sec?: number;
+  one_sentence_summary?: string;
   why_this_clip_was_selected?: string;
   suggested_hashtags?: string[];
   rendered_file_path?: string;
+  is_rendering?: boolean;
 }
 
 export interface ProvenanceInfo {
@@ -26,6 +41,8 @@ export interface ProvenanceInfo {
 export interface JobStatusResponse {
   job_id?: string;
   status: 'running' | 'done' | 'error';
+  progress?: number;
+  stage?: string;
   logs?: string[];
   warnings?: string[];
   failed_stage?: string;
@@ -40,10 +57,11 @@ export interface JobStatusResponse {
 
 export interface AnalyzePayload {
   source: string;
+  aspect_ratio?: AspectRatio;
+  subtitle_preset?: SubtitlePresetId;
   demo?: boolean;
   render?: boolean;
-  aspect_ratio: '9:16' | '1:1' | '16:9';
-  enable_hook_banner: boolean;
+  enable_hook_banner?: boolean;
 }
 
 export interface TrimPayload {
@@ -51,5 +69,21 @@ export interface TrimPayload {
   clips: ClipItem[];
   fast: boolean;
   aspect_ratio: '9:16' | '1:1' | '16:9';
-  enable_hook_banner: boolean;
+  enable_hook_banner?: boolean;
+}
+
+export interface RenderCardPayload {
+  source: string;
+  clip: ClipItem;
+  aspect_ratio?: AspectRatio;
+  subtitle_preset?: SubtitlePresetId;
+}
+
+export interface BackendHealth {
+  online: boolean;
+  scoring_mode?: string;
+  embedding_backend?: string;
+  model_name?: string;
+  provider?: string;
+  error?: string;
 }

@@ -2,16 +2,25 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Header } from '@/components/Header';
-import { InputCard } from '@/components/InputCard';
-import { StatusDrawer } from '@/components/StatusDrawer';
-import { ClipCard } from '@/components/ClipCard';
-import { BatchRenderBar } from '@/components/BatchRenderBar';
-import { AnalyzePayload, TrimPayload, JobStatusResponse, ClipItem } from '@/types/api';
+import { InputStudio } from '@/components/InputStudio';
+import { ProcessingStepper } from '@/components/ProcessingStepper';
+import { ViralClipsFeed } from '@/components/ViralClipsFeed';
+import {
+  AnalyzePayload,
+  JobStatusResponse,
+  ClipItem,
+  BackendHealth,
+  AspectRatio,
+  SubtitlePresetId,
+} from '@/types/api';
+import { Sparkles, Check, Film, ArrowRight, Zap, ShieldCheck } from 'lucide-react';
 
 export default function Home() {
-  const [isOnline, setIsOnline] = useState<boolean>(true);
-  const [scoringMode, setScoringMode] = useState<string>('heuristic');
-  const [activeTab, setActiveTab] = useState<'create' | 'clips' | 'logs'>('create');
+  const [health, setHealth] = useState<BackendHealth>({
+    online: false,
+    scoring_mode: 'heuristic',
+  });
+  const [activeTab, setActiveTab] = useState<'studio' | 'clips' | 'pricing' | 'docs'>('studio');
 
   // Job execution state
   const [jobId, setJobId] = useState<string | null>(null);
@@ -23,11 +32,10 @@ export default function Home() {
 
   // Results state
   const [clips, setClips] = useState<ClipItem[]>([]);
-  const [isSynthetic, setIsSynthetic] = useState<boolean>(false);
-  const [provenanceMode, setProvenanceMode] = useState<string>('');
   const [sourceMedia, setSourceMedia] = useState<string>('');
-  const [aspectRatio, setAspectRatio] = useState<'9:16' | '1:1' | '16:9'>('9:16');
-  const [enableHookBanner, setEnableHookBanner] = useState<boolean>(true);
+  const [episodeTitle, setEpisodeTitle] = useState<string | undefined>();
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
+  const [subtitlePreset, setSubtitlePreset] = useState<SubtitlePresetId>('hormozi');
 
   // Polling ref
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -37,22 +45,25 @@ export default function Home() {
     try {
       const res = await fetch('/api/health');
       const data = await res.json();
-      setIsOnline(data.online !== false);
-      if (data.scoring_mode) {
-        setScoringMode(data.scoring_mode);
-      }
+      setHealth({
+        online: data.online !== false,
+        scoring_mode: data.scoring_mode || 'heuristic',
+        embedding_backend: data.embedding_backend || 'FastEmbed',
+        model_name: data.model_name,
+        provider: data.provider,
+      });
     } catch {
-      setIsOnline(false);
+      setHealth({ online: false, scoring_mode: 'offline' });
     }
   };
 
   useEffect(() => {
     checkHealth();
-    const interval = setInterval(checkHealth, 10000);
+    const interval = setInterval(checkHealth, 8000);
     return () => clearInterval(interval);
   }, []);
 
-  // Cleanup polling timer
+  // Stop Polling
   const stopPolling = () => {
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
@@ -60,7 +71,7 @@ export default function Home() {
     }
   };
 
-  // Poll job status
+  // Poll Job Status
   const startPolling = (id: string) => {
     stopPolling();
     pollTimerRef.current = setInterval(async () => {
@@ -78,15 +89,9 @@ export default function Home() {
           stopPolling();
           setJobStatus('done');
           setClips(data.clips || []);
-          setIsSynthetic(!!data.is_synthetic);
-          if (data.provenance?.scoring_mode) {
-            setProvenanceMode(data.provenance.scoring_mode);
-          }
+          if (data.title) setEpisodeTitle(data.title);
           if (data.source || data.media_file_path) {
             setSourceMedia(data.source || data.media_file_path || '');
-          }
-          if (data.clips && data.clips.length > 0) {
-            setActiveTab('clips');
           }
         } else if (data.status === 'error') {
           stopPolling();
@@ -100,22 +105,27 @@ export default function Home() {
     }, 800);
   };
 
-  // Trigger analysis
+  // Trigger analysis from InputStudio
   const handleStartAnalysis = async (payload: AnalyzePayload) => {
     setJobStatus('running');
-    setLogs([`[start] Initializing pipeline job...`]);
+    setLogs([`[start] Ingestion initiated for source: ${payload.source}`]);
     setClips([]);
     setWarnings([]);
     setErrorMsg(undefined);
     setFailedStage(undefined);
-    setAspectRatio(payload.aspect_ratio);
-    setEnableHookBanner(payload.enable_hook_banner);
+    setSourceMedia(payload.source);
+    if (payload.aspect_ratio) setAspectRatio(payload.aspect_ratio);
+    if (payload.subtitle_preset) setSubtitlePreset(payload.subtitle_preset);
 
     try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          source: payload.source,
+          aspect_ratio: payload.aspect_ratio || '9:16',
+          subtitle_preset: payload.subtitle_preset || 'hormozi',
+        }),
       });
 
       const data = await res.json();
@@ -129,166 +139,227 @@ export default function Home() {
     }
   };
 
-  // Trigger Batch Trim
-  const handleStartTrim = async (payload: TrimPayload) => {
-    setJobStatus('running');
-    setLogs((prev) => [...prev, `[start trim] Batch cutting ${payload.clips.length} clips from JSON...`]);
-
-    try {
-      const res = await fetch('/api/trim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to start trim job');
-
-      setJobId(data.job_id);
-      startPolling(data.job_id);
-    } catch (err: any) {
-      setJobStatus('error');
-      setErrorMsg(err.message || 'Trim operation failed.');
-    }
+  // Update a single clip when rendered on-demand
+  const handleUpdateClip = (updatedClip: ClipItem) => {
+    setClips((prev) =>
+      prev.map((c) => (c.rank === updatedClip.rank ? { ...c, ...updatedClip } : c))
+    );
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#090D16] text-gray-100 selection:bg-indigo-500 selection:text-white pb-20">
+    <div className="min-h-screen flex flex-col bg-[#090D16] text-gray-100 selection:bg-indigo-500 selection:text-white font-sans antialiased">
       {/* Header */}
-      <Header isOnline={isOnline} scoringMode={scoringMode} onRefreshHealth={checkHealth} />
+      <Header
+        health={health}
+        onRefreshHealth={checkHealth}
+        onSelectTab={setActiveTab}
+        activeTab={activeTab}
+      />
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-6 space-y-6">
-        {/* Offline Warning Banner */}
-        {!isOnline && (
-          <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between shadow-lg">
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-8 py-8 space-y-8">
+        {/* Backend Offline Banner */}
+        {!health.online && (
+          <div className="rounded-2xl p-4 bg-gradient-to-r from-rose-500/10 via-rose-500/5 to-transparent border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between shadow-xl">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 rounded-xl bg-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
+              <div className="w-8 h-8 rounded-xl bg-rose-500/20 flex items-center justify-center text-rose-400 shrink-0 font-bold">
+                !
               </div>
               <div>
-                <strong className="font-semibold text-white block">Python Backend Offline (`python app.py`)</strong>
-                <span>Run `python app.py` on port 8000 to enable real video analysis & rendering.</span>
+                <strong className="font-semibold text-white block">
+                  AI Pipeline Server Offline
+                </strong>
+                <span>
+                  Start the backend engine with <code className="bg-black/40 px-1.5 py-0.5 rounded text-rose-200">python app.py</code> to run live AI speech transcription & video reframing.
+                </span>
               </div>
             </div>
             <button
               onClick={checkHealth}
-              className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold text-xs transition-all shrink-0 ml-3"
+              className="px-3.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold text-xs transition-all shrink-0 ml-3"
             >
-              Retry
+              Check Status
             </button>
           </div>
         )}
 
-        {/* Synthetic / Heuristic Notice Banners */}
-        {isSynthetic && (
-          <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center space-x-3">
-            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-bold uppercase text-[10px]">Synthetic Fixture</span>
-            <span>Demo fixture mode active. These outputs are for UI demonstration only.</span>
+        {/* Tab 1: Studio */}
+        {activeTab === 'studio' && (
+          <div className="space-y-8">
+            {/* Unified Ingestion Studio */}
+            <InputStudio
+              onStartAnalysis={handleStartAnalysis}
+              isLoading={jobStatus === 'running'}
+            />
+
+            {/* Real-Time Processing Stepper */}
+            <ProcessingStepper
+              status={jobStatus}
+              logs={logs}
+              warnings={warnings}
+              failedStage={failedStage}
+              errorMsg={errorMsg}
+            />
+
+            {/* Viral Clips Feed Grid */}
+            {clips.length > 0 && (
+              <ViralClipsFeed
+                clips={clips}
+                sourceMedia={sourceMedia}
+                defaultAspectRatio={aspectRatio}
+                defaultSubtitlePreset={subtitlePreset}
+                episodeTitle={episodeTitle}
+                onUpdateClip={handleUpdateClip}
+              />
+            )}
           </div>
         )}
 
-        {provenanceMode === 'heuristic' && !isSynthetic && (
-          <div className="p-3.5 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-200 text-xs flex items-center space-x-3">
-            <span className="px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 font-bold uppercase text-[10px]">Heuristic Mode</span>
-            <span>Scored without LLM keys. Rankings are derived from audio acoustic cues and speech rate.</span>
-          </div>
-        )}
-
-        {/* Input Configuration Card */}
-        <InputCard onStartAnalysis={handleStartAnalysis} isLoading={jobStatus === 'running'} />
-
-        {/* Live Pipeline Status & Logs Drawer */}
-        <StatusDrawer
-          status={jobStatus}
-          logs={logs}
-          failedStage={failedStage}
-          errorMsg={errorMsg}
-          warnings={warnings}
-        />
-
-        {/* Batch Render Action Bar */}
-        {clips.length > 0 && (
-          <BatchRenderBar
-            clips={clips}
-            sourceUrl={sourceMedia}
-            onStartTrim={handleStartTrim}
-            isTrimming={jobStatus === 'running'}
-            aspectRatio={aspectRatio}
-            enableHookBanner={enableHookBanner}
-          />
-        )}
-
-        {/* Clips Showcase Grid Header */}
-        {clips.length > 0 && (
-          <div className="space-y-4 pt-2">
+        {/* Tab 2: My Projects / Clips */}
+        {activeTab === 'clips' && (
+          <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-bold text-white flex items-center space-x-2">
-                  <span>Extracted Shorts</span>
-                  <span className="px-2.5 py-0.5 rounded-full text-xs bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
-                    {clips.length} Clips
-                  </span>
-                </h2>
-                <p className="text-xs text-gray-400">Ranked by virality potential, hook strength & listener retention.</p>
+                <h2 className="text-2xl font-black text-white">Project Library</h2>
+                <p className="text-xs text-gray-400">Review and export all generated viral shorts.</p>
               </div>
+              <button
+                onClick={() => setActiveTab('studio')}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all shadow-md shadow-indigo-600/20"
+              >
+                + New Episode
+              </button>
             </div>
 
-            {/* Clip Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {clips.map((clip) => (
-                <ClipCard key={clip.rank} clip={clip} aspectRatio={aspectRatio} />
+            {clips.length > 0 ? (
+              <ViralClipsFeed
+                clips={clips}
+                sourceMedia={sourceMedia}
+                defaultAspectRatio={aspectRatio}
+                defaultSubtitlePreset={subtitlePreset}
+                episodeTitle={episodeTitle}
+                onUpdateClip={handleUpdateClip}
+              />
+            ) : (
+              <div className="p-12 rounded-3xl bg-white/[0.02] border border-white/[0.06] text-center space-y-4 max-w-md mx-auto">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-400 mx-auto flex items-center justify-center">
+                  <Film className="w-6 h-6" />
+                </div>
+                <h3 className="text-base font-bold text-white">No Clips Extracted Yet</h3>
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  Paste any YouTube URL or upload an episode in the Studio to instantly generate viral clips with animated captions.
+                </p>
+                <button
+                  onClick={() => setActiveTab('studio')}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-500 transition-all"
+                >
+                  Go to ClipPulse Studio
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 3: Pricing */}
+        {activeTab === 'pricing' && (
+          <div className="space-y-8 max-w-5xl mx-auto py-4">
+            <div className="text-center space-y-2">
+              <h2 className="text-3xl font-extrabold text-white">
+                Simple, Transparent Plans for <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">Creators</span>
+              </h2>
+              <p className="text-xs sm:text-sm text-gray-400">
+                Repurpose long-form content into TikToks, Shorts & Reels 10x faster.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {[
+                {
+                  name: 'Starter',
+                  price: '$0',
+                  sub: 'Free forever',
+                  features: ['30 mins audio processing / month', 'Auto language detection', 'Hormozi & CapCut subtitle styles', '720p HD MP4 export'],
+                  cta: 'Current Plan',
+                  popular: false,
+                },
+                {
+                  name: 'Creator Pro',
+                  price: '$29',
+                  sub: 'per month',
+                  features: ['300 mins audio processing', 'All 5 Subtitle Animation Presets', '1080x1920 60fps Ultra HD', 'No watermarks', 'Fast GPU worker queues'],
+                  cta: 'Upgrade to Pro',
+                  popular: true,
+                },
+                {
+                  name: 'Agency Studio',
+                  price: '$79',
+                  sub: 'per month',
+                  features: ['Unlimited audio processing', 'Custom brand font upload', 'Multi-speaker active speaker tracking', 'Priority 24/7 support'],
+                  cta: 'Contact Sales',
+                  popular: false,
+                },
+              ].map((tier) => (
+                <div
+                  key={tier.name}
+                  className={`rounded-3xl p-6 border flex flex-col justify-between space-y-6 ${
+                    tier.popular
+                      ? 'bg-gradient-to-b from-[#141A2E] to-[#0E1322] border-indigo-500 shadow-2xl shadow-indigo-500/20 relative'
+                      : 'bg-[#0D1220]/70 border-white/[0.08]'
+                  }`}
+                >
+                  {tier.popular && (
+                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-indigo-500 to-pink-500 text-white text-[10px] font-black uppercase tracking-wider shadow-md">
+                      Most Popular
+                    </div>
+                  )}
+
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="text-lg font-bold text-white">{tier.name}</h3>
+                      <div className="flex items-baseline space-x-1 mt-2">
+                        <span className="text-3xl font-black text-white font-mono">{tier.price}</span>
+                        <span className="text-xs text-gray-400">{tier.sub}</span>
+                      </div>
+                    </div>
+
+                    <ul className="space-y-2.5 text-xs text-gray-300">
+                      {tier.features.map((f, i) => (
+                        <li key={i} className="flex items-center space-x-2">
+                          <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>{f}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <button
+                    onClick={() => setActiveTab('studio')}
+                    className={`w-full py-2.5 rounded-xl font-bold text-xs transition-all ${
+                      tier.popular
+                        ? 'bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white shadow-lg shadow-indigo-500/25 hover:opacity-95'
+                        : 'bg-white/[0.06] hover:bg-white/[0.1] text-white'
+                    }`}
+                  >
+                    {tier.cta}
+                  </button>
+                </div>
               ))}
             </div>
           </div>
         )}
       </main>
 
-      {/* Floating Mobile Bottom Navigation Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 glass-panel border-t border-white/10 px-6 py-2.5 max-w-lg mx-auto rounded-t-2xl shadow-2xl">
-        <div className="flex items-center justify-around text-xs">
-          <button
-            onClick={() => setActiveTab('create')}
-            className={`flex flex-col items-center space-y-1 transition-colors ${
-              activeTab === 'create' ? 'text-indigo-400 font-bold' : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            <span>Extractor</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('clips')}
-            className={`flex flex-col items-center space-y-1 transition-colors relative ${
-              activeTab === 'clips' ? 'text-indigo-400 font-bold' : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-            <span>Clips ({clips.length})</span>
-            {clips.length > 0 && (
-              <span className="absolute -top-1 right-2 w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('logs')}
-            className={`flex flex-col items-center space-y-1 transition-colors ${
-              activeTab === 'logs' ? 'text-indigo-400 font-bold' : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <span>Logs</span>
-          </button>
+      {/* Footer */}
+      <footer className="w-full border-t border-white/[0.06] py-6 px-4 sm:px-8 text-center text-xs text-gray-500">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+          <p>© 2026 ClipPulse AI • Powered by Whisper, FastEmbed & LLM Virality Scoring</p>
+          <div className="flex items-center space-x-4">
+            <span className="hover:text-gray-300 cursor-pointer" onClick={() => setActiveTab('studio')}>Studio</span>
+            <span className="hover:text-gray-300 cursor-pointer" onClick={() => setActiveTab('clips')}>My Projects</span>
+            <span className="hover:text-gray-300 cursor-pointer" onClick={() => setActiveTab('pricing')}>Pricing</span>
+          </div>
         </div>
-      </nav>
+      </footer>
     </div>
   );
 }
