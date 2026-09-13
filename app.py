@@ -669,7 +669,7 @@ def _run_job(
             clips=[c.model_dump(mode="json") for c in state.final_clips],
             media_file_path=state.media_file_path,
             source=state.source,
-            captions_file_path=captions_path_str,
+            captions_file_path=None,
         )
         log.info("Pipeline job %s completed with %d clips", job_id, len(state.final_clips))
     except Exception as exc:  # a worker crash must not kill the server
