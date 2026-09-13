@@ -204,8 +204,14 @@ class TranscriberProvider:
         target_lang = settings.transcript_language
         from src.utils.transliteration import devanagari_to_urdu
 
+        # Sort raw items chronologically by start timestamp
+        sorted_raw = sorted(
+            raw,
+            key=lambda it: float(self._field(it, "start", 0.0) or 0.0),
+        )
+
         segments: list[TranscriptSegment] = []
-        for item in raw:
+        for i, item in enumerate(sorted_raw):
             raw_text = str(self._field(item, "text", "") or "").replace("\n", " ").strip()
             # If target language is Urdu and YouTube provided Hindi/Devanagari text,
             # auto-transliterate to natural Urdu Nastaliq (Perso-Arabic) script.
@@ -218,9 +224,22 @@ class TranscriberProvider:
             dur_val = self._field(item, "duration", 0.0)
             start = float(start_val) if start_val is not None else 0.0
             duration = float(dur_val) if dur_val is not None else 0.0
-            # Caption cues carry no reliable end time; clamp to a sane minimum
-            # rather than the old blanket `max(duration, 2.0)`.
-            end = start + max(duration, 0.5)
+            raw_end = start + max(duration, 0.2)
+
+            # YouTube captions use rolling multi-line display windows where each segment
+            # lingers on screen well past the moment the next segment begins. Clamping
+            # current segment's end to next segment's start avoids overlapping subtitles
+            # and keeps word pacing synchronized with actual speech.
+            if i + 1 < len(sorted_raw):
+                next_start = float(self._field(sorted_raw[i + 1], "start", 0.0) or 0.0)
+                if next_start > start:
+                    end = min(raw_end, next_start)
+                else:
+                    end = raw_end
+            else:
+                end = raw_end
+            end = max(end, start + 0.1)
+
             speaker = self._guess_speaker(segments)
             segments.append(
                 self._build_segment(len(segments) + 1, start, end, speaker, text)

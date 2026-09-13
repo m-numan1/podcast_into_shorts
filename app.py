@@ -31,7 +31,20 @@ from src.utils.logging_config import get_logger, setup_logging
 log = get_logger(__name__)
 
 _jobs: dict[str, dict] = {}
+_cached_words: dict[str, list] = {}
 _jobs_lock = threading.Lock()
+
+
+def _lookup_cached_words(source: str = "", clip_id: str | None = None) -> list:
+    """Find cached word timestamps for current media to power card subtitle rendering."""
+    with _jobs_lock:
+        if source and source in _cached_words and _cached_words[source]:
+            return _cached_words[source]
+        for k, words in reversed(list(_cached_words.items())):
+            if words:
+                return words
+    return []
+
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
@@ -104,8 +117,6 @@ HTML_PAGE = """<!DOCTYPE html>
   .card-actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
   .btn-card-create { background: linear-gradient(135deg, #6366F1, #8B5CF6); color: #fff; border: none; font-weight: 600; font-size: .84rem; padding: .55rem .95rem; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: .35rem; transition: transform .15s, opacity .15s; }
   .btn-card-create:hover:not(:disabled) { opacity: .92; transform: translateY(-1px); }
-  .btn-card-fast { background: #1F2937; border: 1px solid #4B5563; color: #E5E7EB; font-weight: 600; font-size: .84rem; padding: .55rem .85rem; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: .35rem; }
-  .btn-card-fast:hover:not(:disabled) { background: #374151; color: #fff; }
   .btn-card-rerender { background: transparent; border: 1px solid #4B5563; color: var(--muted); font-size: .75rem; padding: .3rem .6rem; border-radius: 6px; cursor: pointer; align-self: flex-start; margin-top: .2rem; }
   .btn-card-rerender:hover { color: #fff; border-color: var(--text); }
   .card-status { font-size: .82rem; margin-top: .5rem; display: flex; align-items: center; gap: .5rem; }
@@ -122,8 +133,6 @@ HTML_PAGE = """<!DOCTYPE html>
   .batch-btns { display: flex; gap: .75rem; flex-wrap: wrap; }
   .btn-batch-create { background: var(--ok); color: #fff; font-weight: 700; padding: .75rem 1.3rem; border: none; border-radius: 10px; cursor: pointer; font-size: .95rem; font-family: inherit; display: inline-flex; align-items: center; gap: .4rem; }
   .btn-batch-create:hover:not(:disabled) { opacity: .92; }
-  .btn-batch-fast { background: #374151; color: #F3F4F6; font-weight: 600; padding: .75rem 1.2rem; border: 1px solid #4B5563; border-radius: 10px; cursor: pointer; font-size: .95rem; font-family: inherit; display: inline-flex; align-items: center; gap: .4rem; }
-  .btn-batch-fast:hover:not(:disabled) { background: #4B5563; }
 
   /* Quick Loader Bar */
   .quick-bar { display: flex; align-items: center; gap: .8rem; margin-top: 1rem; padding-top: .9rem; border-top: 1px solid rgba(55,65,81,.6); flex-wrap: wrap; font-size: .85rem; }
@@ -135,7 +144,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <body>
 <div class="wrap">
   <h1>Podcast to Shorts</h1>
-  <p class="sub">Finds self-contained clips in long-form audio and video, and directly creates vertical shorts with the cards.</p>
+  <p class="sub">Finds self-contained clips in long-form audio and video, and directly creates vertical shorts with styled subtitles.</p>
 
   <div class="card">
     <div class="row">
@@ -154,6 +163,16 @@ HTML_PAGE = """<!DOCTYPE html>
           <option value="9:16" selected>9:16 Vertical (Shorts/TikTok/Reels)</option>
           <option value="1:1">1:1 Square (LinkedIn/Insta)</option>
           <option value="16:9">16:9 Landscape (YouTube Highlights)</option>
+        </select>
+      </label>
+      <label for="subPreset">Subtitle Style:
+        <select id="subPreset" style="background:#1e293b; color:#fbbf24; font-weight:600; border:1px solid #4f46e5; padding:.3rem .5rem; border-radius:6px; font-family:inherit; margin-left:.3rem;">
+          <option value="hormozi" selected>⚡ Hormozi Bold (Yellow Pop)</option>
+          <option value="capcut_neon">✨ CapCut Neon (Cyan Pop)</option>
+          <option value="mrbeast">🔥 MrBeast (Green Punch)</option>
+          <option value="single_word">🎯 Single Word (Rapid Fire)</option>
+          <option value="minimal">🕊️ Clean Minimal (Bottom)</option>
+          <option value="default">Classic (Standard)</option>
         </select>
       </label>
       <label for="transcriptLang">Audio Language:
@@ -183,11 +202,10 @@ HTML_PAGE = """<!DOCTYPE html>
   <div id="batchBar" class="batch-bar" style="display:none;">
     <div class="batch-info">
       <h2 id="batchTitle">🎬 Ready to Create Shorts</h2>
-      <p id="batchSub">Click <strong>Create Short</strong> directly on any card below, or batch create all.</p>
+      <p id="batchSub">Click <strong>Create Short</strong> directly on any card below, or batch create all with your chosen subtitle style.</p>
     </div>
     <div class="batch-btns">
       <button type="button" id="btnCreateAll" class="btn-batch-create">🎬 Create All Shorts</button>
-      <button type="button" id="btnFastCutAll" class="btn-batch-fast">⚡ Fast Cut All (Instant)</button>
     </div>
   </div>
 
@@ -198,7 +216,7 @@ HTML_PAGE = """<!DOCTYPE html>
 "use strict";
 const $ = (id) => document.getElementById(id);
 const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go");
-const batchBar = $("batchBar"), btnCreateAll = $("btnCreateAll"), btnFastCutAll = $("btnFastCutAll");
+const batchBar = $("batchBar"), btnCreateAll = $("btnCreateAll");
 const btnLoadRecent = $("btnLoadRecent"), jsonFileInput = $("jsonFileInput");
 let timer = null;
 let currentData = null;
@@ -261,42 +279,37 @@ function buildRenderBox(clip, card) {
   const box = el("div", "card-render-box");
   const actRow = el("div", "card-actions");
 
-  const btnCreate = el("button", "btn-card-create", "🎬 Create Short (9:16)");
+  const btnCreate = el("button", "btn-card-create", "🎬 Create Short");
   btnCreate.type = "button";
-  btnCreate.title = "Render vertical 9:16 short with AI hook banner and styled subtitles";
-
-  const btnFast = el("button", "btn-card-fast", "⚡ Fast Cut");
-  btnFast.type = "button";
-  btnFast.title = "Instant cut in < 0.5s via ffmpeg stream copy";
+  btnCreate.title = "Render short with AI hook banner and styled subtitles";
 
   const status = el("div", "card-status");
   status.style.display = "none";
 
-  btnCreate.addEventListener("click", () => renderSingleCard(clip, card, box, false));
-  btnFast.addEventListener("click", () => renderSingleCard(clip, card, box, true));
+  btnCreate.addEventListener("click", () => renderSingleCard(clip, card, box));
 
   actRow.appendChild(btnCreate);
-  actRow.appendChild(btnFast);
   box.appendChild(actRow);
   box.appendChild(status);
   return box;
 }
 
-async function renderSingleCard(clip, card, renderBox, fastMode) {
+async function renderSingleCard(clip, card, renderBox) {
   const status = renderBox.querySelector(".card-status");
   const buttons = renderBox.querySelectorAll("button");
   buttons.forEach(b => b.disabled = true);
 
+  const subStyleName = $("subPreset").selectedOptions[0]?.text || "Hormozi Bold";
   status.style.display = "flex";
   status.className = "card-status loading";
   status.replaceChildren();
   status.appendChild(el("span", "spinner"));
   status.appendChild(document.createTextNode(
-    fastMode ? "⚡ Cutting short via stream copy..." : "🎬 Rendering short (9:16 + hook banner)..."
+    `🎬 Rendering short with ${subStyleName} subtitles...`
   ));
 
   const source = $("src").value.trim() || (currentData && (currentData.media_file_path || currentData.source)) || "";
-  logLine(`[start render] clip #${clip.rank} (${clip.title}) mode=${fastMode ? 'fast' : 'styled'}...`);
+  logLine(`[start render] clip #${clip.rank} (${clip.title}) subtitle_preset=${$("subPreset").value}...`);
 
   try {
     const res = await fetch("/api/render-card", {
@@ -305,9 +318,9 @@ async function renderSingleCard(clip, card, renderBox, fastMode) {
       body: JSON.stringify({
         source,
         clip,
-        fast: fastMode,
         aspect_ratio: $("aspectRatio").value,
         enable_hook_banner: $("enableHookBanner").checked,
+        subtitle_preset: $("subPreset").value,
       }),
     });
     const result = await res.json();
@@ -411,14 +424,14 @@ function renderClips(data) {
   });
 }
 
-async function batchRender(fastMode) {
+async function batchRender() {
   if (!currentData || !currentData.clips || !currentData.clips.length) {
     banner("error", "No cards available to render.");
     return;
   }
   btnCreateAll.disabled = true;
-  btnFastCutAll.disabled = true;
-  logLine(`[batch start] Creating shorts for ${currentData.clips.length} cards (mode=${fastMode ? 'fast cut' : 'styled 9:16'})...`);
+  const styleName = $("subPreset").selectedOptions[0]?.text || "Hormozi Bold";
+  logLine(`[batch start] Creating shorts for ${currentData.clips.length} cards (${styleName})...`);
 
   for (let i = 0; i < currentData.clips.length; i++) {
     const clip = currentData.clips[i];
@@ -432,18 +445,16 @@ async function batchRender(fastMode) {
     }
     if (renderBox) {
       logLine(`[batch progress ${i + 1}/${currentData.clips.length}] rendering clip #${clip.rank}...`);
-      await renderSingleCard(clip, cardEl, renderBox, fastMode);
+      await renderSingleCard(clip, cardEl, renderBox);
     }
   }
 
   logLine("[batch done] Finished processing all cards!");
   banner("success", "✅ All shorts have been created directly from cards!");
   btnCreateAll.disabled = false;
-  btnFastCutAll.disabled = false;
 }
 
-btnCreateAll.addEventListener("click", () => batchRender(false));
-btnFastCutAll.addEventListener("click", () => batchRender(true));
+btnCreateAll.addEventListener("click", () => batchRender());
 
 btnLoadRecent.addEventListener("click", async () => {
   btnLoadRecent.disabled = true;
@@ -545,6 +556,7 @@ goBtn.addEventListener("click", async () => {
         aspect_ratio: $("aspectRatio").value,
         enable_hook_banner: $("enableHookBanner").checked,
         language: $("transcriptLang").value || undefined,
+        subtitle_preset: $("subPreset").value,
       }),
     });
     started = await res.json();
@@ -607,6 +619,7 @@ def _run_job(
     aspect_ratio: str = "9:16",
     enable_hook_banner: bool = True,
     language: str | None = None,
+    subtitle_preset: str = "hormozi",
 ) -> None:
     """Worker thread: run the pipeline and store the result."""
     from src.graph.workflow import VideoEditorPipeline
@@ -622,14 +635,16 @@ def _run_job(
     try:
         model_info = _get_model_info()
         if language is not None:
-            settings.transcript_language = language.strip() or None
-        print(f"\n[ANALYSIS] Starting job {job_id} using: {model_info} (language={settings.transcript_language or 'auto'})", flush=True)
+            clean_lang = language.strip().lower()
+            settings.transcript_language = None if clean_lang in ("auto", "auto-detect", "none", "") else language.strip()
+        print(f"\n[ANALYSIS] Starting job {job_id} using: {model_info} (language={settings.transcript_language or 'auto'}, preset={subtitle_preset})", flush=True)
         log.info(
-            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s, language=%s, model=%s)",
-            job_id, source, demo, render, aspect_ratio, settings.transcript_language or "auto", model_info
+            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s, language=%s, model=%s, preset=%s)",
+            job_id, source, demo, render, aspect_ratio, settings.transcript_language or "auto", model_info, subtitle_preset,
         )
         settings.aspect_ratio = aspect_ratio  # type: ignore[assignment]
         settings.enable_hook_banner = enable_hook_banner
+        settings.subtitle_preset = subtitle_preset
         pipeline = VideoEditorPipeline()
         state = pipeline.run(source, demo_mode=demo, render=render, thread_id=job_id)
         provenance = state.provenance()
@@ -641,6 +656,15 @@ def _run_job(
                 warnings=list(state.warnings),
             )
             return
+
+        words = [w for seg in state.transcript_segments for w in seg.words] if state.transcript_segments else []
+        with _jobs_lock:
+            _cached_words[job_id] = words
+            if state.media_file_path:
+                _cached_words[state.media_file_path] = words
+            if state.source:
+                _cached_words[state.source] = words
+
         set_state(
             status="done",
             warnings=list(state.warnings),
@@ -658,58 +682,6 @@ def _run_job(
             status="error",
             error=f"{type(exc).__name__}: {exc}",
             failed_stage="server",
-        )
-    finally:
-        root_logger.removeHandler(handler)
-
-
-def _run_trim_job(
-    job_id: str,
-    source: str,
-    clips: list[dict],
-    fast_mode: bool,
-    aspect_ratio: str = "9:16",
-    enable_hook_banner: bool = True,
-) -> None:
-    """Worker thread: batch trim clips directly from JSON timestamps."""
-    from src.providers.trimmer import ClipTrimmer
-
-    handler = ThreadJobLogHandler(job_id)
-    root_logger = logging.getLogger()
-    root_logger.addHandler(handler)
-
-    def set_state(**fields) -> None:
-        with _jobs_lock:
-            _jobs[job_id].update(fields)
-
-    try:
-        mode_desc = "Fast stream copy" if fast_mode else f"Full {aspect_ratio} render (hook banner={enable_hook_banner})"
-        log.info(
-            "Starting batch trim job %s for %d clips (%s)",
-            job_id, len(clips), mode_desc
-        )
-        trimmer = ClipTrimmer(aspect_ratio=aspect_ratio, enable_hook_banner=enable_hook_banner)
-
-        rendered = trimmer.trim_all_from_json(
-            media_path=source,
-            json_input=clips,
-            fast_mode=fast_mode,
-            aspect_ratio=aspect_ratio,
-            enable_hook_banner=enable_hook_banner,
-        )
-        success_count = sum(1 for c in rendered if c.get("rendered_file_path"))
-        log.info("Batch trim job %s complete: %d/%d clip(s) cut successfully", job_id, success_count, len(rendered))
-        set_state(
-            status="done",
-            clips=rendered,
-            media_file_path=source,
-        )
-    except Exception as exc:
-        log.exception("Trim job %s failed", job_id)
-        set_state(
-            status="error",
-            error=f"{type(exc).__name__}: {exc}",
-            failed_stage="trimmer",
         )
     finally:
         root_logger.removeHandler(handler)
@@ -858,14 +830,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if isinstance(data, list):
                     data = {"clips": data, "episode": filename}
                 # Auto-resolve media path if missing
-                from src.providers.trimmer import ClipTrimmer
-                trimmer = ClipTrimmer()
-                try:
-                    resolved = trimmer._resolve_media_path(data.get("media_file_path") or data.get("source") or None)
-                    if not data.get("media_file_path"):
-                        data["media_file_path"] = str(resolved)
-                except Exception as exc:
-                    log.debug("Could not auto-resolve media path for %s: %s", filename, exc)
+                candidate_media = data.get("media_file_path") or data.get("source") or ""
+                if candidate_media and Path(candidate_media).is_file():
+                    data["media_file_path"] = str(Path(candidate_media).resolve())
+                elif candidate_media and (settings.cache_dir / candidate_media).is_file():
+                    data["media_file_path"] = str((settings.cache_dir / candidate_media).resolve())
                 self._send_json(data)
                 return
             except Exception as exc:
@@ -887,7 +856,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = urlparse(self.path)
-        if route.path not in ("/api/analyze", "/api/trim", "/api/render-card"):
+        if route.path not in ("/api/analyze", "/api/render-card"):
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
 
@@ -909,6 +878,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         aspect_ratio = str(payload.get("aspect_ratio") or "9:16").strip()
         enable_hook_banner = bool(payload.get("enable_hook_banner", True))
+        subtitle_preset = str(payload.get("subtitle_preset") or settings.subtitle_preset).strip()
         language = payload.get("language")
         if language is not None:
             language = str(language).strip() or None
@@ -920,17 +890,22 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             source = str(payload.get("source") or "").strip()
-            fast_mode = bool(payload.get("fast", False))
-            from src.providers.trimmer import ClipTrimmer
+            from src.providers.renderer import ClipRenderer
 
             try:
-                trimmer = ClipTrimmer(aspect_ratio=aspect_ratio, enable_hook_banner=enable_hook_banner)
-                updated_clip = trimmer.trim_clip(
-                    media_path=source,
-                    clip_data=clip_data,
-                    fast_mode=fast_mode,
+                renderer = ClipRenderer(
                     aspect_ratio=aspect_ratio,
                     enable_hook_banner=enable_hook_banner,
+                    subtitle_preset=subtitle_preset,
+                )
+                words = _lookup_cached_words(source, clip_data.get("id"))
+                updated_clip = renderer.render_clip(
+                    clip_data=clip_data,
+                    media_path=source,
+                    all_words=words,
+                    aspect_ratio=aspect_ratio,
+                    enable_hook_banner=enable_hook_banner,
+                    subtitle_preset=subtitle_preset,
                 )
                 self._send_json({"status": "done", "clip": updated_clip})
                 return
@@ -938,27 +913,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 log.exception("Failed to render card clip %s: %s", clip_data.get("id"), exc)
                 self._send_json({"status": "error", "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
-
-        if route.path == "/api/trim":
-            source = str(payload.get("source") or "").strip()
-            clips = payload.get("clips") or []
-            fast_mode = bool(payload.get("fast", False))
-
-            if not clips:
-                self._send_json({"error": "No clips provided for trimming"}, HTTPStatus.BAD_REQUEST)
-                return
-
-            job_id = uuid.uuid4().hex[:16]
-            with _jobs_lock:
-                _jobs[job_id] = {"status": "running", "logs": [], "warnings": []}
-
-            threading.Thread(
-                target=_run_trim_job,
-                args=(job_id, source, clips, fast_mode, aspect_ratio, enable_hook_banner),
-                daemon=True,
-            ).start()
-            self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
-            return
 
         source = str(payload.get("source") or "").strip()
         demo = bool(payload.get("demo"))
@@ -981,7 +935,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # server stays responsive.
         threading.Thread(
             target=_run_job,
-            args=(job_id, source, demo, render, aspect_ratio, enable_hook_banner, language),
+            args=(job_id, source, demo, render, aspect_ratio, enable_hook_banner, language, subtitle_preset),
             daemon=True,
         ).start()
         self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
