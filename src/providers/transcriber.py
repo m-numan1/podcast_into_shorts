@@ -1,5 +1,9 @@
 """Transcription: YouTube captions when available, otherwise local Whisper.
 
+Local transcription runs on faster-whisper (CTranslate2), which needs neither
+openai-whisper nor torch. Same models, same word-level timestamps, a fraction
+of the install size and several times faster on CPU.
+
 Two behaviour changes:
 
   * There is no hidden fallback transcript. When every backend fails this
@@ -82,20 +86,25 @@ def extract_youtube_id(source: str) -> str:
 
 @lru_cache(maxsize=2)
 def _load_whisper_model(name: str):
-    """Load and cache a Whisper model.
+    """Load and cache a faster-whisper model.
 
-    The original called `whisper.load_model("base")` inside the transcribe
-    method, reloading ~140 MB of weights on every invocation.
+    Cached because the original called `load_model` inside the transcribe
+    method, reloading the weights on every invocation.
+
+    `device="auto"` picks CUDA when it is available and CPU otherwise;
+    `compute_type="auto"` then picks the fastest precision that device
+    supports (int8 on a typical CPU, float16 on a GPU). Neither needs a
+    setting, and neither needs torch -- faster-whisper runs on CTranslate2.
     """
     try:
-        import whisper  # type: ignore[import-untyped,import-not-found]
+        from faster_whisper import WhisperModel
     except ImportError as exc:
         raise MissingDependencyError(
-            "openai-whisper",
-            "pip install openai-whisper  (also requires torch and ffmpeg)",
+            "faster-whisper",
+            "pip install faster-whisper  (also requires ffmpeg)",
         ) from exc
-    log.info("Loading Whisper model %r (first call only)", name)
-    return whisper.load_model(name)
+    log.info("Loading faster-whisper model %r (first call only)", name)
+    return WhisperModel(name, device="auto", compute_type="auto")
 
 
 
@@ -147,7 +156,7 @@ class TranscriberProvider:
 
         raise TranscriptionError(
             "Could not transcribe the source. Attempts:\n  - " + "\n  - ".join(attempts),
-            "Install openai-whisper for local transcription, or use a YouTube URL "
+            "Install faster-whisper for local transcription, or use a YouTube URL "
             "that has captions. Run with --demo to exercise the pipeline on the "
             "bundled fixture transcript instead.",
         )
@@ -192,9 +201,22 @@ class TranscriberProvider:
             ) from exc
 
         raw = self._fetch_captions(YouTubeTranscriptApi, video_id)
+        target_lang = settings.transcript_language
+        from src.utils.transliteration import devanagari_to_urdu
+
+        # Sort raw items chronologically by start timestamp
+        sorted_raw = sorted(
+            raw,
+            key=lambda it: float(self._field(it, "start", 0.0) or 0.0),
+        )
+
         segments: list[TranscriptSegment] = []
-        for item in raw:
+        for i, item in enumerate(sorted_raw):
             raw_text = str(self._field(item, "text", "") or "").replace("\n", " ").strip()
+            # If target language is Urdu and YouTube provided Hindi/Devanagari text,
+            # auto-transliterate to natural Urdu Nastaliq (Perso-Arabic) script.
+            if target_lang == "ur":
+                raw_text = devanagari_to_urdu(raw_text)
             text = clean_transcript_text(raw_text)
             if not text:
                 continue
@@ -202,9 +224,22 @@ class TranscriberProvider:
             dur_val = self._field(item, "duration", 0.0)
             start = float(start_val) if start_val is not None else 0.0
             duration = float(dur_val) if dur_val is not None else 0.0
-            # Caption cues carry no reliable end time; clamp to a sane minimum
-            # rather than the old blanket `max(duration, 2.0)`.
-            end = start + max(duration, 0.5)
+            raw_end = start + max(duration, 0.2)
+
+            # YouTube captions use rolling multi-line display windows where each segment
+            # lingers on screen well past the moment the next segment begins. Clamping
+            # current segment's end to next segment's start avoids overlapping subtitles
+            # and keeps word pacing synchronized with actual speech.
+            if i + 1 < len(sorted_raw):
+                next_start = float(self._field(sorted_raw[i + 1], "start", 0.0) or 0.0)
+                if next_start > start:
+                    end = min(raw_end, next_start)
+                else:
+                    end = raw_end
+            else:
+                end = raw_end
+            end = max(end, start + 0.1)
+
             speaker = self._guess_speaker(segments)
             segments.append(
                 self._build_segment(len(segments) + 1, start, end, speaker, text)
@@ -213,52 +248,145 @@ class TranscriberProvider:
 
     @staticmethod
     def _fetch_captions(api_cls, video_id: str):
-        """Support both youtube-transcript-api v1.x and v0.6.x call shapes."""
+        """Support both youtube-transcript-api v1.x and v0.6.x call shapes with multilingual fallback."""
+        target_lang = settings.transcript_language
+        preferred_langs = [target_lang] if target_lang else ["en"]
         errors = []
+
+        # 1. Try v1.x transcript listing & intelligent language selection
         try:
-            return api_cls().fetch(video_id)  # v1.x instance API
+            api = api_cls() if callable(api_cls) else api_cls
+            if hasattr(api, "list"):
+                transcript_list = api.list(video_id)
+                transcript = None
+                try:
+                    transcript = transcript_list.find_transcript(preferred_langs)
+                except Exception:
+                    # YouTube auto-generates Hindi captions for Urdu speech. If Urdu was
+                    # requested and no Urdu track exists, accept the Hindi track for transliteration.
+                    if target_lang == "ur":
+                        try:
+                            transcript = transcript_list.find_transcript(["hi"])
+                            if transcript is not None:
+                                log.info(
+                                    "Found YouTube Hindi caption track for Urdu video; will auto-transliterate to Urdu script."
+                                )
+                        except Exception:
+                            transcript = None
+
+                    if transcript is None:
+                        if target_lang:
+                            # User explicitly requested another language and it was not found
+                            raise
+                        # Fallback to any available transcript (prefer manual over generated)
+                        manual = [t for t in transcript_list if not getattr(t, "is_generated", False)]
+                        if manual:
+                            transcript = manual[0]
+                        else:
+                            generated = [t for t in transcript_list if getattr(t, "is_generated", False)]
+                            if generated:
+                                transcript = generated[0]
+                            else:
+                                transcript = next(iter(transcript_list), None)
+
+                if transcript is not None:
+                    log.info(
+                        "Found YouTube caption track: language=%s (%s, generated=%s)",
+                        getattr(transcript, "language", "unknown"),
+                        getattr(transcript, "language_code", "?"),
+                        getattr(transcript, "is_generated", False),
+                    )
+                    return transcript.fetch()
         except AttributeError as exc:
-            errors.append(f"v1 fetch: {exc}")
+            errors.append(f"v1 list: {exc}")
         except Exception as exc:
-            errors.append(f"v1 fetch: {type(exc).__name__}: {exc}")
+            errors.append(f"v1 list: {type(exc).__name__}: {exc}")
+
+        # 2. Try v0.6.x list_transcripts if available
         try:
-            return api_cls.get_transcript(video_id)  # v0.6.x classmethod
+            if hasattr(api_cls, "list_transcripts"):
+                transcript_list = api_cls.list_transcripts(video_id)
+                transcript = None
+                try:
+                    transcript = transcript_list.find_transcript(preferred_langs)
+                except Exception:
+                    if target_lang == "ur":
+                        try:
+                            transcript = transcript_list.find_transcript(["hi"])
+                        except Exception:
+                            transcript = None
+                    if transcript is None:
+                        if target_lang:
+                            raise
+                        transcript = next(iter(transcript_list), None)
+                if transcript is not None:
+                    return transcript.fetch()
+        except Exception as exc:
+            errors.append(f"v0 list_transcripts: {type(exc).__name__}: {exc}")
+
+        # 3. Direct fetch attempts
+        fetch_langs = preferred_langs + (["hi"] if target_lang == "ur" else [])
+        try:
+            api = api_cls() if callable(api_cls) else api_cls
+            if hasattr(api, "fetch"):
+                return api.fetch(video_id, languages=fetch_langs)
+        except Exception as exc:
+            errors.append(f"v1 direct fetch: {type(exc).__name__}: {exc}")
+
+        try:
+            if hasattr(api_cls, "get_transcript"):
+                return api_cls.get_transcript(video_id, languages=fetch_langs)
         except Exception as exc:
             errors.append(f"v0 get_transcript: {type(exc).__name__}: {exc}")
+
         raise TranscriptionError(
             f"No caption track retrievable for video {video_id}: " + "; ".join(errors)
         )
 
+
     def _from_whisper(self, audio_path: str) -> list[TranscriptSegment]:
         model = _load_whisper_model(settings.whisper_model)
-        log.info("Transcribing with Whisper (%s); this can take a while.", settings.whisper_model)
-        result = model.transcribe(
+        language = settings.transcript_language or None
+        log.info(
+            "Transcribing with faster-whisper (%s, language=%s); this can take a while.",
+            settings.whisper_model, language or "auto-detect",
+        )
+        # faster-whisper returns (generator, info). Nothing is decoded until the
+        # generator is consumed, so `info` is read first for the log line and
+        # the segments are iterated below.
+        raw_segments, info = model.transcribe(
             audio_path,
             word_timestamps=True,
-            language=settings.transcript_language,
-            verbose=False,
+            language=language,
         )
+        log.info(
+            "Detected language %r (probability %.2f), audio duration %.1fs",
+            info.language, info.language_probability, info.duration,
+        )
+
         segments: list[TranscriptSegment] = []
-        for idx, seg in enumerate(result.get("segments", [])):
+        for idx, seg in enumerate(raw_segments):
+            # sentence_case=False: these are individual words, not sentences.
+            # Capitalising each one rendered every burned caption as
+            # "The Quick Brown Fox" and turned "iPhone" into "IPhone".
             words = [
                 WordTimestamp(
-                    word=clean_transcript_text(w.get("word", "")).strip(),
-                    start=float(w.get("start", 0.0) or 0.0),
-                    end=float(w.get("end", 0.0) or 0.0),
-                    confidence=float(w.get("probability", 1.0) or 1.0),
+                    word=clean_transcript_text(w.word, sentence_case=False).strip(),
+                    start=float(w.start or 0.0),
+                    end=float(w.end or 0.0),
+                    confidence=float(w.probability if w.probability is not None else 1.0),
                 )
-                for w in seg.get("words", [])
-                if clean_transcript_text(w.get("word", "")).strip()
+                for w in (seg.words or [])
+                if clean_transcript_text(w.word, sentence_case=False).strip()
             ]
-            raw_text = (seg.get("text") or "").strip()
-            text = clean_transcript_text(raw_text)
+            text = clean_transcript_text((seg.text or "").strip())
             if not text:
                 continue
             segments.append(
                 TranscriptSegment(
                     id=idx + 1,
-                    start=float(seg.get("start", 0.0) or 0.0),
-                    end=float(seg.get("end", 0.0) or 0.0),
+                    start=float(seg.start or 0.0),
+                    end=float(seg.end or 0.0),
                     text=text,
                     # Whisper does not diarize. Label honestly instead of
                     # alternating "Host"/"Guest" by segment index, which the
@@ -273,10 +401,11 @@ class TranscriberProvider:
 
     @staticmethod
     def _field(item, name: str, default):
-        if isinstance(item, dict):
-            val = item.get(name, default)
-        else:
-            val = getattr(item, name, default)
+        val = (
+            item.get(name, default)
+            if isinstance(item, dict)
+            else getattr(item, name, default)
+        )
         return default if val is None else val
 
 

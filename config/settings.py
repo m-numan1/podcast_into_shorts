@@ -18,7 +18,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 LLMProviderName = Literal["openai", "gemini", "heuristic"]
-EmbeddingBackend = Literal["openai", "gemini", "lexical"]
+EmbeddingBackend = Literal["openai", "gemini", "fastembed", "lexical"]
 
 # Output dimensionality per embedding model. `lexical` is our deterministic
 # offline hashing vectoriser, whose width we choose ourselves.
@@ -27,6 +27,9 @@ EMBEDDING_DIMS: dict[str, int] = {
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
     "models/text-embedding-004": 768,
+    "BAAI/bge-small-en-v1.5": 384,
+    "sentence-transformers/all-MiniLM-L6-v2": 384,
+    "fastembed": 384,
     "lexical": 512,
 }
 
@@ -68,13 +71,21 @@ class Settings(BaseSettings):
     llm_cache_enabled: bool = True
 
     # ---- Embeddings ----
-    embedding_backend: EmbeddingBackend = "lexical"
-    embedding_model: str = "text-embedding-3-small"
+    embedding_backend: EmbeddingBackend = "fastembed"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
     # Derived in the validator below; do not set directly.
     embedding_dim: int = 0
+    fastembed_model: str = "BAAI/bge-small-en-v1.5"
+
+    # ---- NLP Models ----
+    spacy_model: str = "en_core_web_sm"
 
     # ---- Transcription ----
-    whisper_model: str = "base"
+    # A faster-whisper (CTranslate2) model name: tiny/base/small/medium/large-v3,
+    # optionally with an .en suffix for English-only variants. "small" or "medium"
+    # provides fast multilingual auto-detection on CPU/GPU without restricting to English.
+    whisper_model: str = "small"
+    # None means auto-detect. An empty env var is normalised to None below.
     transcript_language: str | None = None
     enable_diarization: bool = False
 
@@ -88,11 +99,14 @@ class Settings(BaseSettings):
     segment_max_duration_sec: float = Field(default=120.0, gt=0)
 
     # ---- Clip constraints ----
-    target_clip_count_min: int = Field(default=5, ge=1)
+    target_clip_count_min: int = Field(default=2, ge=1)
     target_clip_count_max: int = Field(default=15, ge=1)
-    min_clip_duration_sec: float = Field(default=15.0, gt=0)
+    min_clip_duration_sec: float = Field(default=30.0, gt=0)
     max_clip_duration_sec: float = Field(default=90.0, gt=0)
     optimal_clip_duration_sec: float = Field(default=45.0, gt=0)
+    dynamic_clip_scaling: bool = True
+    # Set to 0.0 for dynamic self-calibrating quality cutoff relative to video's top score
+    min_clip_quality_score: float = Field(default=0.0, ge=0.0, le=10.0)
     # Two clips are duplicates when their intersection-over-shorter exceeds
     # this. Symmetric, unlike the old candidate-duration-only comparison.
     dedup_overlap_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -114,21 +128,25 @@ class Settings(BaseSettings):
     # ---- Rendering ----
     render_enabled: bool = False
     aspect_ratio: Literal["9:16", "1:1", "16:9"] = "9:16"
-    enable_hook_banner: bool = True
     render_width: int = 1080
     render_height: int = 1920
     # "blur_pad" keeps the whole 16:9 frame visible against a blurred fill;
     # "crop" fills the frame but can cut faces out of an interview shot.
     render_mode: Literal["blur_pad", "crop"] = "blur_pad"
-    # Fast trim uses ffmpeg stream copy (-c copy) for instant clip cutting.
-    fast_trim_mode: bool = True
     # Cap renders per run; encoding is by far the slowest stage.
     render_max_clips: int = Field(default=5, ge=1, le=100)
 
     render_crf: int = Field(default=20, ge=0, le=51)
     render_preset: str = "medium"
     render_burn_captions: bool = True
+    # Highlight the currently-spoken word inside its cue, using the word-level
+    # timings the transcript already carries. This is the short-form
+    # convention. Set false for static cues, which is also the automatic
+    # behaviour for any cue whose words have no usable timings.
+    render_caption_highlight: bool = True
     render_loudness_lufs: float = -14.0
+    caption_font: str = ""
+    subtitle_preset: str = "hormozi"
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     ffmpeg_timeout_sec: float = Field(default=1800.0, gt=0)
@@ -153,8 +171,22 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _derive_and_check(self) -> "Settings":
+        # `TRANSCRIPT_LANGUAGE=` in a .env file arrives as "", not None, and an
+        # empty string is a valid `str | None`. Whisper only auto-detects on
+        # None -- an empty string reaches the tokenizer and raises "Unsupported
+        # language" -- so blank-means-auto never worked. .env.example ships the
+        # blank form, which made this the default experience for anyone who
+        # copied it.
+        if self.transcript_language is not None and not self.transcript_language.strip():
+            object.__setattr__(self, "transcript_language", None)
+
         # Derive embedding width from the chosen backend/model.
-        key = "lexical" if self.embedding_backend == "lexical" else self.embedding_model
+        if self.embedding_backend == "lexical":
+            key = "lexical"
+        elif self.embedding_backend == "fastembed":
+            key = self.embedding_model if self.embedding_model in EMBEDDING_DIMS else "fastembed"
+        else:
+            key = self.embedding_model
         derived = EMBEDDING_DIMS.get(key)
         if derived is None:
             raise ValueError(

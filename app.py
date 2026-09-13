@@ -18,6 +18,7 @@ state plainly when they are synthetic or heuristically scored.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from http import HTTPStatus
@@ -30,7 +31,20 @@ from src.utils.logging_config import get_logger, setup_logging
 log = get_logger(__name__)
 
 _jobs: dict[str, dict] = {}
+_cached_words: dict[str, list] = {}
 _jobs_lock = threading.Lock()
+
+
+def _lookup_cached_words(source: str = "", clip_id: str | None = None) -> list:
+    """Find cached word timestamps for current media to power card subtitle rendering."""
+    with _jobs_lock:
+        if source and source in _cached_words and _cached_words[source]:
+            return _cached_words[source]
+        for k, words in reversed(list(_cached_words.items())):
+            if words:
+                return words
+    return []
+
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
@@ -62,7 +76,7 @@ HTML_PAGE = """<!DOCTYPE html>
   button { background: var(--accent); color:#fff; font-weight:600; padding:.8rem 1.4rem;
     border:none; border-radius:10px; cursor:pointer; font-size:1rem; font-family:inherit; }
   button:disabled { opacity:.5; cursor:not-allowed; }
-  .checks { display:flex; gap:1.2rem; margin-top:1rem; font-size:.9rem; color:var(--muted); }
+  .checks { display:flex; gap:1.2rem; margin-top:1rem; font-size:.9rem; color:var(--muted); flex-wrap: wrap; }
   .checks label { display:flex; align-items:center; gap:.4rem; margin:0; cursor:pointer; }
   pre.log { background:#000; border-radius:10px; padding:1rem; margin-top:1rem;
     font-size:.8rem; line-height:1.5; color:#9CA3AF; max-height:240px; overflow:auto;
@@ -72,9 +86,10 @@ HTML_PAGE = """<!DOCTYPE html>
   .banner.synthetic { background:rgba(245,158,11,.12); border-color:var(--warn); color:#FDE68A; }
   .banner.heuristic { background:rgba(99,102,241,.12); border-color:var(--accent); color:#C7D2FE; }
   .banner.error { background:rgba(239,68,68,.12); border-color:var(--err); color:#FECACA; }
+  .banner.success { background:rgba(16,185,129,.12); border-color:var(--ok); color:#A7F3D0; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:1.25rem; }
   .clip { background:var(--card); border:1px solid var(--line); border-radius:14px;
-          padding:1.25rem; position:relative; }
+          padding:1.25rem; position:relative; display:flex; flex-direction:column; }
   .rank { position:absolute; top:1rem; right:1rem; background:var(--accent); color:#fff;
           font-size:.75rem; font-weight:700; padding:.2rem .6rem; border-radius:99px; }
   .clip h3 { font-size:1.05rem; margin-bottom:.5rem; padding-right:3.5rem; line-height:1.35; }
@@ -96,12 +111,40 @@ HTML_PAGE = """<!DOCTYPE html>
   .clip-video { width: 100%; max-height: 420px; outline: none; background: #000; border-radius: 8px; }
   .dl-btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; background: var(--ok); color: #fff; text-decoration: none; font-size: .85rem; font-weight: 600; padding: .5rem 1rem; border-radius: 8px; text-align: center; }
   .dl-btn:hover { opacity: .9; }
+
+  /* Direct Card Shorts Actions */
+  .card-render-box { margin: .8rem 0 1rem; background: rgba(31, 41, 55, 0.6); border: 1px dashed #4F46E5; border-radius: 10px; padding: .85rem; }
+  .card-actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  .btn-card-create { background: linear-gradient(135deg, #6366F1, #8B5CF6); color: #fff; border: none; font-weight: 600; font-size: .84rem; padding: .55rem .95rem; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: .35rem; transition: transform .15s, opacity .15s; }
+  .btn-card-create:hover:not(:disabled) { opacity: .92; transform: translateY(-1px); }
+  .btn-card-rerender { background: transparent; border: 1px solid #4B5563; color: var(--muted); font-size: .75rem; padding: .3rem .6rem; border-radius: 6px; cursor: pointer; align-self: flex-start; margin-top: .2rem; }
+  .btn-card-rerender:hover { color: #fff; border-color: var(--text); }
+  .card-status { font-size: .82rem; margin-top: .5rem; display: flex; align-items: center; gap: .5rem; }
+  .card-status.loading { color: #93C5FD; }
+  .card-status.error { color: #FCA5A5; }
+  .card-status.success { color: #6EE7B7; }
+  .spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Batch Bar */
+  .batch-bar { background: linear-gradient(135deg, #111827, #1E1B4B); border: 1px solid #4F46E5; border-radius: 14px; padding: 1.2rem 1.5rem; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; box-shadow: 0 4px 20px rgba(99,102,241,0.15); }
+  .batch-info h2 { font-size: 1.15rem; margin-bottom: .2rem; color: #fff; display: flex; align-items: center; gap: .5rem; }
+  .batch-info p { font-size: .85rem; color: #A5B4FC; }
+  .batch-btns { display: flex; gap: .75rem; flex-wrap: wrap; }
+  .btn-batch-create { background: var(--ok); color: #fff; font-weight: 700; padding: .75rem 1.3rem; border: none; border-radius: 10px; cursor: pointer; font-size: .95rem; font-family: inherit; display: inline-flex; align-items: center; gap: .4rem; }
+  .btn-batch-create:hover:not(:disabled) { opacity: .92; }
+
+  /* Quick Loader Bar */
+  .quick-bar { display: flex; align-items: center; gap: .8rem; margin-top: 1rem; padding-top: .9rem; border-top: 1px solid rgba(55,65,81,.6); flex-wrap: wrap; font-size: .85rem; }
+  .quick-label { color: var(--muted); font-weight: 500; }
+  .btn-subtle { background: #1E293B; border: 1px solid #334155; color: #E2E8F0; padding: .45rem .85rem; border-radius: 7px; font-size: .82rem; cursor: pointer; font-family: inherit; display: inline-flex; align-items: center; gap: .35rem; }
+  .btn-subtle:hover { background: #334155; border-color: #64748B; color: #fff; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Podcast to Shorts</h1>
-  <p class="sub">Finds self-contained clips in long-form audio and video, and optionally renders them vertically.</p>
+  <p class="sub">Finds self-contained clips in long-form audio and video, and directly creates vertical shorts with styled subtitles.</p>
 
   <div class="card">
     <div class="row">
@@ -113,9 +156,7 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
     <div class="checks">
       <label><input type="checkbox" id="demo"> Demo mode (synthetic fixture)</label>
-      <label><input type="checkbox" id="render"> Render MP4s (needs ffmpeg)</label>
-      <label><input type="checkbox" id="fastCut" checked> Fast Cut (-c copy, instant)</label>
-      <label><input type="checkbox" id="enableHookBanner" checked> AI Hook Title Banner</label>
+      <label><input type="checkbox" id="render"> Render MP4s during analysis</label>
       <label for="aspectRatio">Format:
         <select id="aspectRatio" style="background:#1e293b; color:#fff; border:1px solid #334155; padding:.3rem .5rem; border-radius:6px; font-family:inherit; margin-left:.3rem;">
           <option value="9:16" selected>9:16 Vertical (Shorts/TikTok/Reels)</option>
@@ -123,21 +164,61 @@ HTML_PAGE = """<!DOCTYPE html>
           <option value="16:9">16:9 Landscape (YouTube Highlights)</option>
         </select>
       </label>
+      <label for="subPreset">Subtitle Style:
+        <select id="subPreset" style="background:#1e293b; color:#fbbf24; font-weight:600; border:1px solid #4f46e5; padding:.3rem .5rem; border-radius:6px; font-family:inherit; margin-left:.3rem;">
+          <option value="hormozi" selected>⚡ Hormozi Bold (Yellow Pop)</option>
+          <option value="capcut_neon">✨ CapCut Neon (Cyan Pop)</option>
+          <option value="mrbeast">🔥 MrBeast (Green Punch)</option>
+          <option value="single_word">🎯 Single Word (Rapid Fire)</option>
+          <option value="minimal">🕊️ Clean Minimal (Bottom)</option>
+          <option value="default">Classic (Standard)</option>
+        </select>
+      </label>
+      <label for="transcriptLang">Audio Language:
+        <select id="transcriptLang" style="background:#1e293b; color:#fff; border:1px solid #334155; padding:.3rem .5rem; border-radius:6px; font-family:inherit; margin-left:.3rem;">
+          <option value="" selected>Auto-detect</option>
+          <option value="ur">Urdu (اردو)</option>
+          <option value="hi">Hindi (हिंदी)</option>
+          <option value="en">English</option>
+          <option value="ar">Arabic (العربية)</option>
+          <option value="es">Spanish</option>
+        </select>
+      </label>
+    </div>
+    <div class="quick-bar">
+      <span class="quick-label">⚡ Direct Actions:</span>
+      <button type="button" id="btnLoadRecent" class="btn-subtle" title="Load clips from outputs/final_clips.json">📂 Load Existing final_clips.json</button>
+      <label class="btn-subtle" style="cursor:pointer;" title="Upload your own JSON file with clip timestamps">
+        📤 Upload Custom JSON
+        <input type="file" id="jsonFileInput" accept=".json" style="display:none;">
+      </label>
     </div>
     <pre class="log" id="log" hidden></pre>
   </div>
 
   <div id="banners"></div>
-  <button type="button" id="trimAll" style="display:none; background: var(--ok); color: #fff; font-weight:700; padding: .8rem 1.4rem; border:none; border-radius:10px; cursor:pointer; margin-bottom:1.5rem; font-size:1rem; font-family:inherit;">Render All Shorts from JSON</button>
+
+  <div id="batchBar" class="batch-bar" style="display:none;">
+    <div class="batch-info">
+      <h2 id="batchTitle">🎬 Ready to Create Shorts</h2>
+      <p id="batchSub">Click <strong>Create Short</strong> directly on any card below, or batch create all with your chosen subtitle style.</p>
+    </div>
+    <div class="batch-btns">
+      <button type="button" id="btnCreateAll" class="btn-batch-create">🎬 Create All Shorts</button>
+    </div>
+  </div>
+
   <div class="grid" id="grid"></div>
 </div>
 
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go"), trimAllBtn = $("trimAll");
+const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go");
+const batchBar = $("batchBar"), btnCreateAll = $("btnCreateAll");
+const btnLoadRecent = $("btnLoadRecent"), jsonFileInput = $("jsonFileInput");
 let timer = null;
-let lastResult = null;
+let currentData = null;
 
 function logLine(text) {
   logBox.hidden = false;
@@ -145,13 +226,9 @@ function logLine(text) {
   logBox.scrollTop = logBox.scrollHeight;
 }
 
-
-
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
-  // textContent, never innerHTML: clip text comes from transcripts and video
-  // titles and must never be parsed as markup.
   if (text !== undefined && text !== null) n.textContent = String(text);
   return n;
 }
@@ -167,15 +244,124 @@ function metric(label, value) {
   return row;
 }
 
+function buildVideoWrap(clip, card, renderBox) {
+  const parts = (clip.rendered_file_path || "").split(/[\\\\/]/);
+  const filename = parts[parts.length - 1];
+  if (!filename) return null;
+
+  const videoWrap = el("div", "video-wrap");
+  const video = document.createElement("video");
+  video.controls = true;
+  video.preload = "metadata";
+  video.className = "clip-video";
+  video.src = "/renders/" + encodeURIComponent(filename);
+  videoWrap.appendChild(video);
+
+  const dlBtn = el("a", "dl-btn", "⬇ Download Short (MP4)");
+  dlBtn.href = "/renders/" + encodeURIComponent(filename);
+  dlBtn.setAttribute("download", filename);
+  videoWrap.appendChild(dlBtn);
+
+  const reBtn = el("button", "btn-card-rerender", "🔄 Re-render Short");
+  reBtn.type = "button";
+  reBtn.addEventListener("click", () => {
+    videoWrap.remove();
+    const newBox = buildRenderBox(clip, card);
+    card.insertBefore(newBox, card.querySelector(".m"));
+  });
+  videoWrap.appendChild(reBtn);
+
+  return videoWrap;
+}
+
+function buildRenderBox(clip, card) {
+  const box = el("div", "card-render-box");
+  const actRow = el("div", "card-actions");
+
+  const btnCreate = el("button", "btn-card-create", "🎬 Create Short");
+  btnCreate.type = "button";
+  btnCreate.title = "Render short with styled subtitles";
+
+  const status = el("div", "card-status");
+  status.style.display = "none";
+
+  btnCreate.addEventListener("click", () => renderSingleCard(clip, card, box));
+
+  actRow.appendChild(btnCreate);
+  box.appendChild(actRow);
+  box.appendChild(status);
+  return box;
+}
+
+async function renderSingleCard(clip, card, renderBox) {
+  const status = renderBox.querySelector(".card-status");
+  const buttons = renderBox.querySelectorAll("button");
+  buttons.forEach(b => b.disabled = true);
+
+  const subStyleName = $("subPreset").selectedOptions[0]?.text || "Hormozi Bold";
+  status.style.display = "flex";
+  status.className = "card-status loading";
+  status.replaceChildren();
+  status.appendChild(el("span", "spinner"));
+  status.appendChild(document.createTextNode(
+    `🎬 Rendering short with ${subStyleName} subtitles...`
+  ));
+
+  const source = $("src").value.trim() || (currentData && (currentData.media_file_path || currentData.source)) || "";
+  logLine(`[start render] clip #${clip.rank} (${clip.title}) subtitle_preset=${$("subPreset").value}...`);
+
+  try {
+    const res = await fetch("/api/render-card", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source,
+        clip,
+        aspect_ratio: $("aspectRatio").value,
+        subtitle_preset: $("subPreset").value,
+      }),
+    });
+    const result = await res.json();
+    if (!res.ok || result.status === "error") {
+      throw new Error(result.error || res.statusText || "Rendering failed");
+    }
+
+    clip.rendered_file_path = result.clip.rendered_file_path;
+    logLine(`[rendered] clip #${clip.rank} saved -> ${result.clip.rendered_file_path}`);
+
+    renderBox.remove();
+    const videoWrap = buildVideoWrap(clip, card, renderBox);
+    if (videoWrap) {
+      const metricAnchor = card.querySelector(".m");
+      if (metricAnchor) card.insertBefore(videoWrap, metricAnchor);
+      else card.appendChild(videoWrap);
+    }
+
+    const renderedFoot = card.querySelector(".rendered-path-foot");
+    if (renderedFoot) {
+      renderedFoot.textContent = "Rendered: " + clip.rendered_file_path;
+    }
+  } catch (err) {
+    logLine(`[render error] #${clip.rank}: ${err.message}`);
+    status.className = "card-status error";
+    status.replaceChildren();
+    status.textContent = "Error: " + err.message;
+    buttons.forEach(b => b.disabled = false);
+  }
+}
+
 function renderClips(data) {
-  lastResult = data;
+  currentData = data;
   banners.replaceChildren();
   grid.replaceChildren();
 
-  if (data.clips && data.clips.length) {
-    trimAllBtn.style.display = "inline-block";
+  const clips = data.clips || [];
+  if (clips.length > 0) {
+    batchBar.style.display = "flex";
+    $("batchTitle").textContent = `🎬 ${clips.length} Clips Ready`;
+    $("batchSub").textContent = "Directly create shorts using the buttons on each card, or batch render below.";
   } else {
-    trimAllBtn.style.display = "none";
+    batchBar.style.display = "none";
   }
 
   const p = data.provenance || {};
@@ -193,8 +379,9 @@ function renderClips(data) {
     banners.appendChild(box);
   }
 
-  (data.clips || []).forEach(clip => {
+  clips.forEach(clip => {
     const card = el("div", "clip");
+    card.id = `card-${clip.id}`;
     card.appendChild(el("div", "rank", "#" + clip.rank));
     card.appendChild(el("h3", null, clip.title));
     card.appendChild(el("div", "time",
@@ -206,24 +393,11 @@ function renderClips(data) {
     card.appendChild(hook);
 
     if (clip.rendered_file_path) {
-      const parts = clip.rendered_file_path.split(/[\\\\/]/);
-      const filename = parts[parts.length - 1];
-      if (filename) {
-        const videoWrap = el("div", "video-wrap");
-        const video = document.createElement("video");
-        video.controls = true;
-        video.preload = "metadata";
-        video.className = "clip-video";
-        video.src = "/renders/" + encodeURIComponent(filename);
-        videoWrap.appendChild(video);
-
-        const dlBtn = el("a", "dl-btn", "⬇ Download Short (MP4)");
-        dlBtn.href = "/renders/" + encodeURIComponent(filename);
-        dlBtn.setAttribute("download", filename);
-        videoWrap.appendChild(dlBtn);
-
-        card.appendChild(videoWrap);
-      }
+      const vWrap = buildVideoWrap(clip, card, null);
+      if (vWrap) card.appendChild(vWrap);
+    } else {
+      const rBox = buildRenderBox(clip, card);
+      card.appendChild(rBox);
     }
 
     card.appendChild(metric("Overall", Number(clip.overall_score).toFixed(2) + " / 10"));
@@ -236,9 +410,8 @@ function renderClips(data) {
     const foot = el("div", "foot");
     foot.appendChild(el("div", null, clip.one_sentence_summary));
     foot.appendChild(el("div", null, "Why: " + (clip.why_this_clip_was_selected || "")));
-    if (clip.rendered_file_path) {
-      foot.appendChild(el("div", null, "Rendered: " + clip.rendered_file_path));
-    }
+    const pathFoot = el("div", "rendered-path-foot", clip.rendered_file_path ? ("Rendered: " + clip.rendered_file_path) : "");
+    foot.appendChild(pathFoot);
     card.appendChild(foot);
 
     const tags = el("div", "tags");
@@ -249,13 +422,83 @@ function renderClips(data) {
   });
 }
 
+async function batchRender() {
+  if (!currentData || !currentData.clips || !currentData.clips.length) {
+    banner("error", "No cards available to render.");
+    return;
+  }
+  btnCreateAll.disabled = true;
+  const styleName = $("subPreset").selectedOptions[0]?.text || "Hormozi Bold";
+  logLine(`[batch start] Creating shorts for ${currentData.clips.length} cards (${styleName})...`);
+
+  for (let i = 0; i < currentData.clips.length; i++) {
+    const clip = currentData.clips[i];
+    const cardEl = $(`card-${clip.id}`);
+    if (!cardEl) continue;
+
+    let renderBox = cardEl.querySelector(".card-render-box");
+    if (!renderBox && !clip.rendered_file_path) {
+      renderBox = buildRenderBox(clip, cardEl);
+      cardEl.insertBefore(renderBox, cardEl.querySelector(".m"));
+    }
+    if (renderBox) {
+      logLine(`[batch progress ${i + 1}/${currentData.clips.length}] rendering clip #${clip.rank}...`);
+      await renderSingleCard(clip, cardEl, renderBox);
+    }
+  }
+
+  logLine("[batch done] Finished processing all cards!");
+  banner("success", "✅ All shorts have been created directly from cards!");
+  btnCreateAll.disabled = false;
+}
+
+btnCreateAll.addEventListener("click", () => batchRender());
+
+btnLoadRecent.addEventListener("click", async () => {
+  btnLoadRecent.disabled = true;
+  logLine("[load] Loading outputs/final_clips.json...");
+  try {
+    const res = await fetch("/api/load-json?file=final_clips.json");
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || res.statusText);
+
+    if (data.media_file_path && !$("src").value.trim()) {
+      $("src").value = data.media_file_path;
+    }
+    renderClips(data);
+    logLine(`[load] Loaded ${(data.clips || []).length} clips from final_clips.json! You can directly create shorts with the cards now.`);
+  } catch (err) {
+    logLine(`[load error] ${err.message}`);
+    banner("error", "Could not load final_clips.json: " + err.message);
+  } finally {
+    btnLoadRecent.disabled = false;
+  }
+});
+
+jsonFileInput.addEventListener("change", (event) => {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      const data = Array.isArray(parsed) ? { clips: parsed, episode: file.name } : parsed;
+      renderClips(data);
+      logLine(`[upload] Loaded ${(data.clips || []).length} clips from ${file.name}!`);
+    } catch (err) {
+      banner("error", "Failed to parse JSON file: " + err.message);
+    }
+  };
+  reader.readAsText(file);
+});
+
 async function poll(jobId, seenLogs) {
   let res;
   try {
     res = await fetch("/api/status?job_id=" + encodeURIComponent(jobId));
   } catch (e) {
     logLine("[error] lost connection: " + e.message);
-    clearInterval(timer); goBtn.disabled = false; trimAllBtn.disabled = false;
+    clearInterval(timer); goBtn.disabled = false;
     return seenLogs;
   }
   const data = await res.json();
@@ -267,7 +510,6 @@ async function poll(jobId, seenLogs) {
   clearInterval(timer);
   timer = null;
   goBtn.disabled = false;
-  trimAllBtn.disabled = false;
 
   if (data.status === "error") {
     banners.replaceChildren();
@@ -310,7 +552,8 @@ goBtn.addEventListener("click", async () => {
         demo,
         render: $("render").checked,
         aspect_ratio: $("aspectRatio").value,
-        enable_hook_banner: $("enableHookBanner").checked,
+        language: $("transcriptLang").value || undefined,
+        subtitle_preset: $("subPreset").value,
       }),
     });
     started = await res.json();
@@ -325,46 +568,10 @@ goBtn.addEventListener("click", async () => {
   timer = setInterval(async () => { seen = await poll(started.job_id, seen); }, 800);
 });
 
-trimAllBtn.addEventListener("click", async () => {
-  if (!lastResult || !lastResult.clips || !lastResult.clips.length) {
-    banner("error", "No JSON clips available to render.");
-    return;
-  }
-  const source = $("src").value.trim() || (lastResult && (lastResult.source || lastResult.media_file_path)) || "";
-  trimAllBtn.disabled = true;
-  logLine("[start batch trim] cutting " + lastResult.clips.length + " clips from JSON...");
-
-  let started;
-  try {
-    const res = await fetch("/api/trim", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source: source,
-        clips: lastResult.clips,
-        fast: $("fastCut").checked,
-        aspect_ratio: $("aspectRatio").value,
-        enable_hook_banner: $("enableHookBanner").checked,
-      }),
-    });
-    started = await res.json();
-    if (!res.ok) throw new Error(started.error || res.statusText);
-  } catch (e) {
-    logLine("[trim error] " + e.message);
-    trimAllBtn.disabled = false;
-    return;
-  }
-
-  let seen = 0;
-  timer = setInterval(async () => { seen = await poll(started.job_id, seen); }, 800);
-});
 </script>
 </body>
 </html>
 """
-
-
-import logging
 
 
 class ThreadJobLogHandler(logging.Handler):
@@ -407,7 +614,8 @@ def _run_job(
     demo: bool,
     render: bool,
     aspect_ratio: str = "9:16",
-    enable_hook_banner: bool = True,
+    language: str | None = None,
+    subtitle_preset: str = "hormozi",
 ) -> None:
     """Worker thread: run the pipeline and store the result."""
     from src.graph.workflow import VideoEditorPipeline
@@ -422,13 +630,16 @@ def _run_job(
 
     try:
         model_info = _get_model_info()
-        print(f"\n[ANALYSIS] Starting job {job_id} using: {model_info}", flush=True)
+        if language is not None:
+            clean_lang = language.strip().lower()
+            settings.transcript_language = None if clean_lang in ("auto", "auto-detect", "none", "") else language.strip()
+        print(f"\n[ANALYSIS] Starting job {job_id} using: {model_info} (language={settings.transcript_language or 'auto'}, preset={subtitle_preset})", flush=True)
         log.info(
-            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s, model=%s)",
-            job_id, source, demo, render, model_info, aspect_ratio
+            "Starting pipeline analysis job %s (source=%r, demo=%s, render=%s, ratio=%s, language=%s, model=%s, preset=%s)",
+            job_id, source, demo, render, aspect_ratio, settings.transcript_language or "auto", model_info, subtitle_preset,
         )
         settings.aspect_ratio = aspect_ratio  # type: ignore[assignment]
-        settings.enable_hook_banner = enable_hook_banner
+        settings.subtitle_preset = subtitle_preset
         pipeline = VideoEditorPipeline()
         state = pipeline.run(source, demo_mode=demo, render=render, thread_id=job_id)
         provenance = state.provenance()
@@ -440,8 +651,15 @@ def _run_job(
                 warnings=list(state.warnings),
             )
             return
-        captions_file = settings.output_dir / "captions.txt"
-        captions_path_str = str(captions_file) if captions_file.exists() else None
+
+        words = [w for seg in state.transcript_segments for w in seg.words] if state.transcript_segments else []
+        with _jobs_lock:
+            _cached_words[job_id] = words
+            if state.media_file_path:
+                _cached_words[state.media_file_path] = words
+            if state.source:
+                _cached_words[state.source] = words
+
         set_state(
             status="done",
             warnings=list(state.warnings),
@@ -463,59 +681,6 @@ def _run_job(
         )
     finally:
         root_logger.removeHandler(handler)
-
-
-def _run_trim_job(
-    job_id: str,
-    source: str,
-    clips: list[dict],
-    fast_mode: bool,
-    aspect_ratio: str = "9:16",
-    enable_hook_banner: bool = True,
-) -> None:
-    """Worker thread: batch trim clips directly from JSON timestamps."""
-    from src.providers.trimmer import ClipTrimmer
-
-    handler = ThreadJobLogHandler(job_id)
-    root_logger = logging.getLogger()
-    root_logger.addHandler(handler)
-
-    def set_state(**fields) -> None:
-        with _jobs_lock:
-            _jobs[job_id].update(fields)
-
-    try:
-        log.info(
-            "Starting trim job %s for %d clips (fast=%s, ratio=%s, hook=%s)",
-            job_id, len(clips), fast_mode, aspect_ratio, enable_hook_banner
-        )
-        trimmer = ClipTrimmer(aspect_ratio=aspect_ratio, enable_hook_banner=enable_hook_banner)
-        media_path = source
-        if not media_path and (settings.cache_dir / "synthetic_demo.mp4").exists():
-            media_path = str(settings.cache_dir / "synthetic_demo.mp4")
-
-        rendered = trimmer.trim_all_from_json(
-            media_path=media_path,
-            json_input=clips,
-            fast_mode=fast_mode,
-            aspect_ratio=aspect_ratio,
-            enable_hook_banner=enable_hook_banner,
-        )
-        log.info("Trim job %s complete: cut %d clip(s)", job_id, len(rendered))
-        set_state(
-            status="done",
-            clips=rendered,
-        )
-    except Exception as exc:
-        log.exception("Trim job %s failed", job_id)
-        set_state(
-            status="error",
-            error=f"{type(exc).__name__}: {exc}",
-            failed_stage="trimmer",
-        )
-    finally:
-        root_logger.removeHandler(handler)
-
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -675,13 +840,49 @@ class RequestHandler(BaseHTTPRequestHandler):
                 log.exception("Error serving render file %s: %s", filename, exc)
                 return
 
+        if route.path == "/api/load-json":
+            query = parse_qs(route.query)
+            filename = query.get("file", ["final_clips.json"])[0]
+            candidate = (settings.output_dir / filename).resolve()
+            root = settings.output_dir.resolve()
+            if root not in candidate.parents and candidate != root:
+                self._send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+            if not candidate.exists() or not candidate.is_file():
+                self._send_json({"error": f"JSON file '{filename}' not found in {settings.output_dir}"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    data = {"clips": data, "episode": filename}
+                # Auto-resolve media path if missing
+                candidate_media = data.get("media_file_path") or data.get("source") or ""
+                if candidate_media and Path(candidate_media).is_file():
+                    data["media_file_path"] = str(Path(candidate_media).resolve())
+                elif candidate_media and (settings.cache_dir / candidate_media).is_file():
+                    data["media_file_path"] = str((settings.cache_dir / candidate_media).resolve())
+                self._send_json(data)
+                return
+            except Exception as exc:
+                self._send_json({"error": f"Failed reading {filename}: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+
+        if route.path == "/api/list-json-files":
+            try:
+                files = [f.name for f in settings.output_dir.glob("*.json") if f.is_file()]
+                self._send_json({"files": sorted(files)})
+                return
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     # -------------------------------------------------------------- POST
 
     def do_POST(self) -> None:
         route = urlparse(self.path)
-        if route.path not in ("/api/analyze", "/api/trim"):
+        if route.path not in ("/api/analyze", "/api/render-card"):
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
 
@@ -702,25 +903,39 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         aspect_ratio = str(payload.get("aspect_ratio") or "9:16").strip()
-        enable_hook_banner = bool(payload.get("enable_hook_banner", True))
+        subtitle_preset = str(payload.get("subtitle_preset") or settings.subtitle_preset).strip()
+        language = payload.get("language")
+        if language is not None:
+            language = str(language).strip() or None
 
-        if route.path == "/api/trim":
-            source = str(payload.get("source") or "").strip()
-            clips = payload.get("clips") or []
-            fast_mode = bool(payload.get("fast", True))
-            if not clips:
-                self._send_json({"error": "No clips provided for trimming"}, HTTPStatus.BAD_REQUEST)
+        if route.path == "/api/render-card":
+            clip_data = payload.get("clip")
+            if not clip_data or not isinstance(clip_data, dict):
+                self._send_json({"error": "Clip data object is required"}, HTTPStatus.BAD_REQUEST)
                 return
-            job_id = uuid.uuid4().hex[:16]
-            with _jobs_lock:
-                _jobs[job_id] = {"status": "running", "logs": [], "warnings": []}
-            threading.Thread(
-                target=_run_trim_job,
-                args=(job_id, source, clips, fast_mode, aspect_ratio, enable_hook_banner),
-                daemon=True,
-            ).start()
-            self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
-            return
+
+            source = str(payload.get("source") or "").strip()
+            from src.providers.renderer import ClipRenderer
+
+            try:
+                renderer = ClipRenderer(
+                    aspect_ratio=aspect_ratio,
+                    subtitle_preset=subtitle_preset,
+                )
+                words = _lookup_cached_words(source, clip_data.get("id"))
+                updated_clip = renderer.render_clip(
+                    clip_data=clip_data,
+                    media_path=source,
+                    all_words=words,
+                    aspect_ratio=aspect_ratio,
+                    subtitle_preset=subtitle_preset,
+                )
+                self._send_json({"status": "done", "clip": updated_clip})
+                return
+            except Exception as exc:
+                log.exception("Failed to render card clip %s: %s", clip_data.get("id"), exc)
+                self._send_json({"status": "error", "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
 
         source = str(payload.get("source") or "").strip()
         demo = bool(payload.get("demo"))
@@ -743,7 +958,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # server stays responsive.
         threading.Thread(
             target=_run_job,
-            args=(job_id, source, demo, render, aspect_ratio, enable_hook_banner),
+            args=(job_id, source, demo, render, aspect_ratio, language, subtitle_preset),
             daemon=True,
         ).start()
         self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)

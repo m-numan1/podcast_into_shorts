@@ -33,10 +33,13 @@ def node_07_candidates(state: EditorState) -> dict[str, Any]:
         f"shortlisted {len(shortlisted)} for evaluation"
     ]
     warnings: list[str] = []
-    if len(shortlisted) < settings.target_clip_count_min:
+    from src.agents.chief_editor import calculate_dynamic_clip_bounds
+    dur = state.duration_seconds or (state.sentence_units[-1].end if state.sentence_units else 0.0)
+    effective_min, _, _ = calculate_dynamic_clip_bounds(dur)
+    if len(shortlisted) < effective_min:
         warnings.append(
             f"Only {len(shortlisted)} candidate(s) available, below the target "
-            f"minimum of {settings.target_clip_count_min} final clips."
+            f"minimum of {effective_min} final clips."
         )
 
     update: dict[str, Any] = {

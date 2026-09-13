@@ -15,6 +15,7 @@ from src.agents.editors import (
     AGENTS_BY_KEY,
     evaluate,
     evaluate_heuristically,
+    has_dangling_start,
 )
 from src.schema.clips import ExtractedFeatures
 from tests.conftest import make_candidate
@@ -194,3 +195,45 @@ class TestNoDemoTranscriptKeywords:
         agent = AGENTS_BY_KEY["educational"]
         assert evaluate_heuristically(agent, demo).educational_value == \
                evaluate_heuristically(agent, other).educational_value
+
+
+class TestBackchannelOpenersScoreDown:
+    """DANGLING_START_RE covered conjunctions and pronouns but not
+    acknowledgment tokens, so the -2.5 hook penalty never fired on any of the
+    openers a real run actually shipped."""
+
+    BODY = (
+        " Most founders skip the hardest part of building a company, and it "
+        "costs them two years."
+    )
+
+    @staticmethod
+    def hook_score(text: str) -> float:
+        candidate = make_candidate("cand_001", 0.0, 40.0, text=text, features=RICH)
+        return evaluate_heuristically(AGENTS_BY_KEY["hook"], candidate).hook_strength
+
+    def test_absolutely_opener_scores_lower_than_the_same_clip_without_it(self):
+        clean = self.hook_score(self.BODY.strip())
+        opened_on_backchannel = self.hook_score("Absolutely." + self.BODY)
+        assert opened_on_backchannel < clean
+
+    @pytest.mark.parametrize("opener", [
+        "Absolutely.", "Mhm.", "Exactly.", "Yeah, yeah,", "Right.", "Oh wow.",
+    ])
+    def test_observed_openers_are_all_penalised(self, opener):
+        assert self.hook_score(opener + self.BODY) < self.hook_score(self.BODY.strip())
+
+    def test_the_long_survivor_from_the_real_run_is_penalised(self):
+        """Too substantive to trim, so scoring is the only thing that catches it."""
+        assert has_dangling_start(
+            "Yeah, yeah, and it takes you outside of your body."
+        )
+
+    def test_a_clean_opener_is_not_penalised(self):
+        assert not has_dangling_start("Most founders skip the hardest part.")
+        assert not has_dangling_start("Pricing is the whole game.")
+
+    def test_the_original_dangling_families_still_fire(self):
+        """Conjunctions and pronouns must keep working."""
+        for text in ("And then he said it was over.", "They never saw it coming."):
+            assert has_dangling_start(text)

@@ -41,46 +41,14 @@ WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’-]*")
 
 # Cue families. Matched on whole words, and kept generic rather than tuned to
 # one transcript.
-CURIOSITY_CUES = frozenset("""
-why how secret secrets truth hidden mystery unknown puzzle surprising counterintuitive
-nobody everyone myth misconception reason actually wrong believe assume realise realize
-imagine suppose wonder question questions weird strange unexpected
-""".split())
-STRONG_CUES = frozenset("""
-never always must every none nobody everyone impossible guaranteed absolutely
-critical essential devastating unprecedented terrifying shocking huge massive
-worst best only single biggest hardest fastest proof proven
-""".split())
-STORY_CUES = frozenset("""
-story remember happened once when started began first time day night year
-example case customer client friend told said asked realised realized learned
-mistake failed failure lesson journey built discovered
-""".split())
-POSITIVE_CUES = frozenset("""
-great good best amazing incredible wonderful fantastic brilliant love loved
-success successful win won growth grew improve improved better easy simple
-remarkable fascinating excited exciting happy proud
-""".split())
-NEGATIVE_CUES = frozenset("""
-bad worst terrible awful fail failed failure hard difficult painful pain
-mistake wrong lose lost loss decline declined crisis catastrophe danger
-dangerous risk scared afraid fear angry frustrated broken hate
-""".split())
+CURIOSITY_CUES = frozenset(["why", "how", "secret", "secrets", "truth", "hidden", "mystery", "unknown", "puzzle", "surprising", "counterintuitive", "nobody", "everyone", "myth", "misconception", "reason", "actually", "wrong", "believe", "assume", "realise", "realize", "imagine", "suppose", "wonder", "question", "questions", "weird", "strange", "unexpected"])
+STRONG_CUES = frozenset(["never", "always", "must", "every", "none", "nobody", "everyone", "impossible", "guaranteed", "absolutely", "critical", "essential", "devastating", "unprecedented", "terrifying", "shocking", "huge", "massive", "worst", "best", "only", "single", "biggest", "hardest", "fastest", "proof", "proven"])
+STORY_CUES = frozenset(["story", "remember", "happened", "once", "when", "started", "began", "first", "time", "day", "night", "year", "example", "case", "customer", "client", "friend", "told", "said", "asked", "realised", "realized", "learned", "mistake", "failed", "failure", "lesson", "journey", "built", "discovered"])
+POSITIVE_CUES = frozenset(["great", "good", "best", "amazing", "incredible", "wonderful", "fantastic", "brilliant", "love", "loved", "success", "successful", "win", "won", "growth", "grew", "improve", "improved", "better", "easy", "simple", "remarkable", "fascinating", "excited", "exciting", "happy", "proud"])
+NEGATIVE_CUES = frozenset(["bad", "worst", "terrible", "awful", "fail", "failed", "failure", "hard", "difficult", "painful", "pain", "mistake", "wrong", "lose", "lost", "loss", "decline", "declined", "crisis", "catastrophe", "danger", "dangerous", "risk", "scared", "afraid", "fear", "angry", "frustrated", "broken", "hate"])
 
 # Words too generic to be useful as topic keywords.
-KEYWORD_STOPLIST = frozenset("""
-about actually after again against all also always and any are because been
-before being between both but came come could did does doing done down each
-even every first from gets getting give given going gone got had has have
-here how into just kind know like little look looking made make making many
-maybe mean means might more most much need never new next not now only other
-our out over own really right said same say says see seen she should since
-some something still such take taken than that the their them then there
-these they thing things think this those though thought through time too
-under until very want wanted was way well went were what when where which
-while who why will with without would yeah year years you your really quite
-sort lot bit going gonna okay right kinda basically literally
-""".split())
+KEYWORD_STOPLIST = frozenset(["about", "actually", "after", "again", "against", "all", "also", "always", "and", "any", "are", "because", "been", "before", "being", "between", "both", "but", "came", "come", "could", "did", "does", "doing", "done", "down", "each", "even", "every", "first", "from", "gets", "getting", "give", "given", "going", "gone", "got", "had", "has", "have", "here", "how", "into", "just", "kind", "know", "like", "little", "look", "looking", "made", "make", "making", "many", "maybe", "mean", "means", "might", "more", "most", "much", "need", "never", "new", "next", "not", "now", "only", "other", "our", "out", "over", "own", "really", "right", "said", "same", "say", "says", "see", "seen", "she", "should", "since", "some", "something", "still", "such", "take", "taken", "than", "that", "the", "their", "them", "then", "there", "these", "they", "thing", "things", "think", "this", "those", "though", "thought", "through", "time", "too", "under", "until", "very", "want", "wanted", "was", "way", "well", "went", "were", "what", "when", "where", "which", "while", "who", "why", "will", "with", "without", "would", "yeah", "year", "years", "you", "your", "really", "quite", "sort", "lot", "bit", "going", "gonna", "okay", "right", "kinda", "basically", "literally"])
 
 
 def _words(text: str) -> list[str]:
@@ -88,12 +56,20 @@ def _words(text: str) -> list[str]:
 
 
 def extract_named_entities(text: str, limit: int = 8) -> list[str]:
-    """Heuristic proper-noun and quantity extractor.
+    """Named entity extractor using spaCy with heuristic proper-noun fallback.
 
-    Not a trained NER model, and named accordingly in the docs. Capitalised
-    runs that begin a sentence are dropped unless they recur mid-sentence,
-    which is what removes "Welcome", "Today" and "The".
+    If spaCy model is installed, extracts genuine semantic entities (PERSON,
+    ORG, GPE, MONEY, PRODUCT, EVENT). Otherwise falls back to the heuristic
+    capitalized-run parser.
     """
+    from src.analysis.nlp import extract_spacy_entities
+
+    spacy_ents = extract_spacy_entities(text, limit=limit)
+    if spacy_ents is not None and len(spacy_ents) > 0:
+        quantities = PERCENT_RE.findall(text) + QUANTITY_RE.findall(text)
+        merged = list(dict.fromkeys([*spacy_ents, *quantities]))
+        return merged[:limit]
+
     sentences = SENTENCE_SPLIT_RE.split(text.strip())
     mid_sentence: dict[str, int] = {}
     sentence_initial: set[str] = set()
@@ -153,6 +129,8 @@ def extract_features(
     units: list[SentenceUnit],
 ) -> ExtractedFeatures:
     """Compute features for one chunk from its text and its units' timings."""
+    from src.analysis.nlp import analyze_sentiment
+
     text = chunk.text
     lower_words = [w.lower().strip("'’-") for w in _words(text)]
     word_set = set(lower_words)
@@ -173,24 +151,30 @@ def extract_features(
     strong = min(1.0, 0.15 + strong_hits * 0.16)
     story = min(1.0, 0.15 + story_hits * 0.13)
 
-    # Signed sentiment in [-1, 1], normalised by total cue count so a long
-    # chunk is not automatically more extreme than a short one.
+    # Sentiment analysis: prefer VADER (handles negation, intensity, conversational text).
+    # Fall back to cue ratio if VADER is unavailable.
+    vader_sentiment = analyze_sentiment(text)
     total_cues = pos_hits + neg_hits
-    sentiment = (pos_hits - neg_hits) / (total_cues + 1.0)
+    if vader_sentiment is not None:
+        sentiment = vader_sentiment
+    else:
+        # Signed sentiment in [-1, 1], normalised by total cue count.
+        sentiment = (pos_hits - neg_hits) / (total_cues + 1.0)
 
-    if pos_hits > neg_hits and pos_hits > 0:
+    if sentiment > 0.2 and (pos_hits > 0 or sentiment > 0.4):
         emotion = "positive/enthusiastic"
-    elif neg_hits > pos_hits and neg_hits > 0:
+    elif sentiment < -0.2 and (neg_hits > 0 or sentiment < -0.4):
         emotion = "negative/cautionary"
     elif story_hits >= 2:
         emotion = "narrative"
-    elif question_count > 0:
+    elif question_count > 0 or curiosity_hits >= 2:
         emotion = "inquisitive"
     else:
         emotion = "neutral/analytical"
 
-    # Emotional intensity: cue density per 100 words, saturating.
-    emotion_score = min(1.0, total_cues / max(word_count / 100.0, 1.0) / 6.0)
+    # Emotional intensity: sentiment magnitude combined with cue density per 100 words.
+    cue_density = total_cues / max(word_count / 100.0, 1.0) / 6.0
+    emotion_score = min(1.0, 0.4 * abs(sentiment) + 0.6 * min(1.0, cue_density))
 
     # Real pause measurement from the unit gaps inside this chunk.
     chunk_units = [

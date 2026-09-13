@@ -66,17 +66,24 @@ def run(
     error_cls: type[PipelineError],
     what: str,
     timeout: float | None = None,
+    cwd: str | Path | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a binary, raising `error_cls` with stderr included on failure."""
+    """Run a binary, raising `error_cls` with stderr included on failure.
+
+    `cwd` lets the caller reference a file by bare name instead of by path.
+    The renderer needs it because a path cannot be escaped into the subtitles
+    filter once it contains an apostrophe; see `renderer.escape_filter_path`.
+    Every other path in `args` must be absolute when `cwd` is set.
+    """
     timeout = timeout if timeout is not None else settings.ffmpeg_timeout_sec
     log.debug("exec: %s", " ".join(args))
     try:
         proc = subprocess.run(
             args,
             check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
+            cwd=str(cwd) if cwd is not None else None,
         )
     except subprocess.TimeoutExpired as exc:
         raise error_cls(

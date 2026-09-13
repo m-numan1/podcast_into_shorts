@@ -114,7 +114,7 @@ class TestSection4Regression:
 
     def test_chunks_do_not_overlap_and_are_ordered(self, long_caption_segments):
         _, chunks = segment(long_caption_segments)
-        for earlier, later in zip(chunks, chunks[1:]):
+        for earlier, later in zip(chunks, chunks[1:], strict=False):
             assert earlier.end <= later.start + 1e-6
 
     def test_chunk_ids_are_unique(self, long_caption_segments):
