@@ -280,11 +280,17 @@ def build_embedder(backend: str | None = None, dim: int | None = None):
     if backend == "gemini":
         return GeminiEmbedder(dim)
     if backend == "fastembed":
-        log.info(
-            "Using FastEmbed semantic embedder (local, ONNX, CPU-accelerated, %d-dim).",
-            dim or 384,
-        )
-        return FastEmbedEmbedder(dim or 384)
+        try:
+            log.info(
+                "Using FastEmbed semantic embedder (local, ONNX, CPU-accelerated, %d-dim).",
+                dim or 384,
+            )
+            return FastEmbedEmbedder(dim or 384)
+        except (MissingDependencyError, EmbeddingError) as exc:
+            log.warning(
+                "FastEmbed is unavailable (%s); falling back to lexical hashing.", exc
+            )
+            return LexicalHashingEmbedder(dim or 512)
     if backend == "lexical":
         log.info(
             "Using the lexical hashing embedder (offline, deterministic, "
