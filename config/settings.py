@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     render_caption_highlight: bool = True
     render_loudness_lufs: float = -14.0
     caption_font: str = ""
+    subtitle_preset: str = "hormozi"
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     ffmpeg_timeout_sec: float = Field(default=1800.0, gt=0)

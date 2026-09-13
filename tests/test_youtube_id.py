@@ -141,3 +141,29 @@ def test_from_youtube_captions_transliterates_devanagari_when_target_is_ur(monke
     assert "सामना" not in segments[0].text
     assert "سامنا" in segments[0].text
     assert "پڑے گا" in segments[0].text
+
+
+def test_from_youtube_captions_clamps_rolling_durations(monkeypatch):
+    """YouTube captions have rolling multi-line durations that overlap. They must be clamped."""
+    from config.settings import settings
+    from src.providers.transcriber import TranscriberProvider
+
+    monkeypatch.setattr(settings, "transcript_language", "")
+    provider = TranscriberProvider()
+
+    # Two segments where segment 0 duration (3.5s) extends past segment 1 start (2.0s)
+    raw = [
+        {"text": "we have more access", "start": 0.0, "duration": 3.5},
+        {"text": "to knowledge than any", "start": 2.0, "duration": 3.0},
+    ]
+    monkeypatch.setattr(provider, "_fetch_captions", lambda api, vid: raw)
+
+    segments = provider._from_youtube_captions("dQw4w9WgXcQ")
+    assert len(segments) == 2
+    # Segment 0 end must be clamped to 2.0 (start of segment 1)
+    assert segments[0].end == pytest.approx(2.0, abs=0.01)
+    assert segments[1].start == pytest.approx(2.0, abs=0.01)
+    # Words in segment 0 must not exceed 2.0
+    for w in segments[0].words:
+        assert w.end <= 2.0 + 1e-4
+

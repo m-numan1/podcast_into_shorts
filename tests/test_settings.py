@@ -166,9 +166,10 @@ class TestAppModelInfo:
         import inspect
         import app
         sig = inspect.signature(app._run_job)
-        assert len(sig.parameters) == 7
+        assert len(sig.parameters) == 8
         assert "aspect_ratio" in sig.parameters
         assert "enable_hook_banner" in sig.parameters
         assert "language" in sig.parameters
+        assert "subtitle_preset" in sig.parameters
 
 

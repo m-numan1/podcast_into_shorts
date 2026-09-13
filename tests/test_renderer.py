@@ -380,3 +380,116 @@ class TestWordHighlightCues:
         """Existing callers and tests must keep working."""
         spoken = words([("a", 0.0, 0.3), ("b", 0.3, 0.7)])
         assert build_caption_cues(spoken, 0.0, 2.0) == [(0.0, 0.7, "a b")]
+
+
+class TestSubtitlePresets:
+    @pytest.fixture
+    def sample_cues(self):
+        spoken = words([("make", 0.0, 0.3), ("money", 0.3, 0.6), ("online", 0.6, 1.0)])
+        return group_caption_cues(spoken, 0.0, 2.0)
+
+    def test_hormozi_preset_styling(self, sample_cues, tmp_path):
+        from src.providers.renderer import SUBTITLE_PRESETS
+        path = write_ass_file(sample_cues, tmp_path / "hormozi.ass", 1080, 1920, preset="hormozi", highlight=True)
+        content = path.read_text(encoding="utf-8")
+        # Check font, uppercase, and pop scale
+        assert "Style: Caption,Impact" in content
+        assert "MAKE" in content
+        assert r"\fscx115\fscy115" in content
+        assert r"\c&H3BF5FF&" in content
+
+    def test_capcut_neon_preset_styling(self, sample_cues, tmp_path):
+        path = write_ass_file(sample_cues, tmp_path / "capcut.ass", 1080, 1920, preset="capcut_neon", highlight=True)
+        content = path.read_text(encoding="utf-8")
+        assert "Style: Caption,Arial Black" in content
+        assert r"\fscx112\fscy112" in content
+        assert r"\c&HFFFF00&" in content
+
+    def test_mrbeast_preset_styling(self, sample_cues, tmp_path):
+        path = write_ass_file(sample_cues, tmp_path / "mrbeast.ass", 1080, 1920, preset="mrbeast", highlight=True)
+        content = path.read_text(encoding="utf-8")
+        assert r"\fscx120\fscy120" in content
+        assert r"\c&H22E544&" in content
+
+    def test_single_word_preset_grouping(self):
+        spoken = words([("one", 0.0, 0.2), ("two", 0.2, 0.4), ("three", 0.4, 0.6)])
+        cues = group_caption_cues(spoken, 0.0, 1.0, words_per_cue=1)
+        assert len(cues) == 3
+        assert cues[0].text == "one"
+        assert cues[1].text == "two"
+        assert cues[2].text == "three"
+
+    def test_minimal_preset_styling(self, sample_cues, tmp_path):
+        path = write_ass_file(sample_cues, tmp_path / "minimal.ass", 1080, 1920, preset="minimal", highlight=True)
+        content = path.read_text(encoding="utf-8")
+        # Minimal is not uppercase and has no pop scale
+        assert "make" in content
+        assert r"\fscx" not in content
+
+    def test_urdu_preserves_noto_font_despite_preset(self, tmp_path):
+        urdu_words = words([("یہ", 0.0, 0.3), ("ایک", 0.3, 0.6), ("ٹیسٹ", 0.6, 1.0)])
+        urdu_cues = group_caption_cues(urdu_words, 0.0, 2.0)
+        path = write_ass_file(urdu_cues, tmp_path / "urdu.ass", 1080, 1920, preset="hormozi")
+        content = path.read_text(encoding="utf-8")
+        # Even with Hormozi preset (Impact), Urdu text gets Noto Nastaliq Urdu
+        assert "Style: Caption,Noto Nastaliq Urdu" in content
+
+    def test_cues_never_overlap_even_with_jittered_or_backwards_words(self):
+        """Regression test: overlapping words from rolling captions must not produce overlapping cues."""
+        jittered = words([
+            ("first", 1.0, 3.5),
+            ("phrase", 1.5, 3.8),
+            # Backwards timestamp simulating rolling ASR caption
+            ("second", 2.0, 4.0),
+            ("phrase", 2.5, 4.2),
+            ("third", 3.0, 5.0),
+        ])
+        cues = group_caption_cues(jittered, 0.0, 10.0, words_per_cue=2)
+        assert len(cues) >= 2
+        for i in range(len(cues) - 1):
+            assert cues[i].end <= cues[i + 1].start + 1e-5, (
+                f"Cue {i} (end={cues[i].end}) overlaps with Cue {i+1} (start={cues[i+1].start})"
+            )
+
+    def test_dialogue_events_never_overlap_in_ass(self, tmp_path):
+        """Dialogue lines in generated .ass file must never overlap across cues."""
+        overlapping_words = words([
+            ("we", 0.0, 1.5),
+            ("have", 0.5, 2.0),
+            ("more", 1.0, 2.5),
+            ("generation", 1.8, 3.5),
+            ("in", 2.2, 3.8),
+            ("history", 2.6, 4.0),
+        ])
+        cues = group_caption_cues(overlapping_words, 0.0, 5.0, words_per_cue=2)
+        path = write_ass_file(cues, tmp_path / "no_overlap.ass", 1080, 1920, highlight=True)
+        dialogue_lines = [
+            l for l in path.read_text(encoding="utf-8").splitlines()
+            if l.startswith("Dialogue: 0,")
+        ]
+        # Parse start and end times for all caption dialogue events
+        intervals = []
+        for line in dialogue_lines:
+            parts = line.split(",")
+            s_parts = parts[1].split(":")
+            e_parts = parts[2].split(":")
+            s_sec = int(s_parts[0]) * 3600 + int(s_parts[1]) * 60 + float(s_parts[2])
+            e_sec = int(e_parts[0]) * 3600 + int(e_parts[1]) * 60 + float(e_parts[2])
+            intervals.append((s_sec, e_sec))
+
+        for i in range(len(intervals) - 1):
+            assert intervals[i][1] <= intervals[i + 1][0] + 1e-4, (
+                f"Dialogue {i} ends at {intervals[i][1]} but dialogue {i+1} starts at {intervals[i+1][0]}"
+            )
+
+    def test_single_word_preset_pops_highlight(self, tmp_path):
+        """Single-word preset must pop-scale and highlight the active word."""
+        spoken = words([("focus", 0.0, 0.5)])
+        cues = group_caption_cues(spoken, 0.0, 1.0, words_per_cue=1)
+        path = write_ass_file(cues, tmp_path / "single.ass", 1080, 1920, preset="single_word", highlight=True)
+        content = path.read_text(encoding="utf-8")
+        assert r"\fscx115\fscy115" in content
+        assert r"\c&H00FFFF&" in content
+        assert "FOCUS" in content
+
+
