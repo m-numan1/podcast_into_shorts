@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 TranscriptSource = Literal["youtube_captions", "whisper", "fixture", "unavailable"]
 MediaSource = Literal["youtube_download", "local_file", "fixture", "unavailable"]
 ScoringMode = Literal["llm", "heuristic"]
-EmbeddingBackendName = Literal["openai", "gemini", "lexical"]
+EmbeddingBackendName = Literal["openai", "gemini", "fastembed", "lexical"]
 
 
 class DataProvenance(BaseModel):
