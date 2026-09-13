@@ -230,6 +230,47 @@ class GeminiEmbedder(_RemoteEmbedder):
         return self._client.embed_documents(texts)
 
 
+class FastEmbedEmbedder:
+    """Local, offline semantic embeddings using FastEmbed (ONNX, CPU-accelerated)."""
+
+    name = "fastembed"
+
+    def __init__(self, dim: int = 384, model_name: str | None = None):
+        self.dim = dim
+        self.model_name = model_name or settings.fastembed_model
+        try:
+            from fastembed import TextEmbedding
+        except ImportError as exc:
+            raise MissingDependencyError("fastembed", "pip install fastembed") from exc
+
+        try:
+            self._model = TextEmbedding(model_name=self.model_name)
+        except Exception as exc:
+            raise EmbeddingError(
+                f"Failed to load FastEmbed model {self.model_name!r}: {exc}",
+                "Check internet connection for initial model download, or set EMBEDDING_BACKEND=lexical.",
+            ) from exc
+
+    def embed(self, texts: Sequence[str]) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self.dim), dtype=np.float32)
+        try:
+            vectors = list(self._model.embed(list(texts)))
+            arr = np.asarray(vectors, dtype=np.float32)
+        except Exception as exc:
+            raise EmbeddingError(f"FastEmbed failed to embed {len(texts)} texts: {exc}") from exc
+
+        if arr.shape[1] != self.dim:
+            self.dim = arr.shape[1]
+        # Normalise so dot product is cosine similarity.
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return arr / norms
+
+    def embed_one(self, text: str) -> np.ndarray:
+        return self.embed([text])[0]
+
+
 def build_embedder(backend: str | None = None, dim: int | None = None):
     """Construct the configured embedder."""
     backend = backend or settings.embedding_backend
@@ -238,6 +279,12 @@ def build_embedder(backend: str | None = None, dim: int | None = None):
         return OpenAIEmbedder(dim)
     if backend == "gemini":
         return GeminiEmbedder(dim)
+    if backend == "fastembed":
+        log.info(
+            "Using FastEmbed semantic embedder (local, ONNX, CPU-accelerated, %d-dim).",
+            dim or 384,
+        )
+        return FastEmbedEmbedder(dim or 384)
     if backend == "lexical":
         log.info(
             "Using the lexical hashing embedder (offline, deterministic, "

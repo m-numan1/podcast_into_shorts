@@ -40,22 +40,30 @@ def _semantic_dips(state: EditorState) -> dict[int, float] | None:
         return None
 
     window = 4
-    embedder = build_embedder()
-    texts: list[str] = []
-    for i in range(len(units) - 1):
-        left = " ".join(u.text for u in units[max(0, i - window + 1) : i + 1])
-        right = " ".join(u.text for u in units[i + 1 : i + 1 + window])
-        texts.append(left)
-        texts.append(right)
+    try:
+        embedder = build_embedder()
+        texts: list[str] = []
+        for i in range(len(units) - 1):
+            left = " ".join(u.text for u in units[max(0, i - window + 1) : i + 1])
+            right = " ".join(u.text for u in units[i + 1 : i + 1 + window])
+            texts.append(left)
+            texts.append(right)
 
-    vectors = embedder.embed(texts)
-    dips: dict[int, float] = {}
-    for i in range(len(units) - 1):
-        left_vec, right_vec = vectors[2 * i], vectors[2 * i + 1]
-        # Map cosine from [-1, 1] into [0, 1] for the seam scorer.
-        dips[i] = max(0.0, min(1.0, (cosine_similarity(left_vec, right_vec) + 1.0) / 2.0))
-    log.info("Computed %d semantic boundary similarities", len(dips))
-    return dips
+        vectors = embedder.embed(texts)
+        dips: dict[int, float] = {}
+        for i in range(len(units) - 1):
+            left_vec, right_vec = vectors[2 * i], vectors[2 * i + 1]
+            # Map cosine from [-1, 1] into [0, 1] for the seam scorer.
+            dips[i] = max(0.0, min(1.0, (cosine_similarity(left_vec, right_vec) + 1.0) / 2.0))
+        log.info("Computed %d semantic boundary similarities via %s", len(dips), settings.embedding_backend)
+        return dips
+    except Exception as exc:
+        log.warning(
+            "Semantic dip detection failed (%s: %s); falling back to pause and sentence structure.",
+            type(exc).__name__,
+            exc,
+        )
+        return None
 
 
 @pipeline_node(stage="segment", label="Node 4 Segment")

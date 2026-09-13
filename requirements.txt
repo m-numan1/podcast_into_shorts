@@ -36,3 +36,8 @@ langchain-google-genai>=2.0,<3.0
 # to a NumPy matmul, which is fast enough for the chunk counts an episode
 # produces. Omit if no wheel exists for your Python version.
 faiss-cpu>=1.8,<2.0 ; python_version < "3.13"
+
+# --- Local Free Offline NLP & Embeddings ---
+fastembed>=0.8,<1.0
+spacy>=3.8,<4.0
+vaderSentiment>=3.3,<4.0

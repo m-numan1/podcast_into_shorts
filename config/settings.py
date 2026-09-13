@@ -18,7 +18,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 LLMProviderName = Literal["openai", "gemini", "heuristic"]
-EmbeddingBackend = Literal["openai", "gemini", "lexical"]
+EmbeddingBackend = Literal["openai", "gemini", "fastembed", "lexical"]
 
 # Output dimensionality per embedding model. `lexical` is our deterministic
 # offline hashing vectoriser, whose width we choose ourselves.
@@ -27,6 +27,9 @@ EMBEDDING_DIMS: dict[str, int] = {
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
     "models/text-embedding-004": 768,
+    "BAAI/bge-small-en-v1.5": 384,
+    "sentence-transformers/all-MiniLM-L6-v2": 384,
+    "fastembed": 384,
     "lexical": 512,
 }
 
@@ -68,10 +71,14 @@ class Settings(BaseSettings):
     llm_cache_enabled: bool = True
 
     # ---- Embeddings ----
-    embedding_backend: EmbeddingBackend = "lexical"
-    embedding_model: str = "text-embedding-3-small"
+    embedding_backend: EmbeddingBackend = "fastembed"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
     # Derived in the validator below; do not set directly.
     embedding_dim: int = 0
+    fastembed_model: str = "BAAI/bge-small-en-v1.5"
+
+    # ---- NLP Models ----
+    spacy_model: str = "en_core_web_sm"
 
     # ---- Transcription ----
     # A faster-whisper (CTranslate2) model name: tiny/base/small/medium/large-v3,
@@ -175,7 +182,12 @@ class Settings(BaseSettings):
             object.__setattr__(self, "transcript_language", None)
 
         # Derive embedding width from the chosen backend/model.
-        key = "lexical" if self.embedding_backend == "lexical" else self.embedding_model
+        if self.embedding_backend == "lexical":
+            key = "lexical"
+        elif self.embedding_backend == "fastembed":
+            key = self.embedding_model if self.embedding_model in EMBEDDING_DIMS else "fastembed"
+        else:
+            key = self.embedding_model
         derived = EMBEDDING_DIMS.get(key)
         if derived is None:
             raise ValueError(
