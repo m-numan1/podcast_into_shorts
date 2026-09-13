@@ -176,21 +176,6 @@ class TestWriteAssFile:
 
         assert font_size(large) > font_size(small)
 
-    def test_hook_header_in_ass_file(self, tmp_path):
-        path = write_ass_file(
-            [(0.0, 1.0, "hello world")],
-            tmp_path / "h.ass",
-            1080,
-            1920,
-            hook_text="MUST WATCH: Amazing Insight",
-        )
-        text = path.read_text(encoding="utf-8")
-        assert "Style: HookHeader" in text
-        assert "MUST WATCH: Amazing Insight" in text
-        lines = [line for line in text.splitlines() if line.startswith("Dialogue:")]
-        assert len(lines) == 2
-        assert "HookHeader" in lines[0]
-
 
 class TestClipRendererAspectRatios:
     def test_aspect_ratio_resolutions(self):
@@ -369,12 +354,6 @@ class TestWordHighlightCues:
                               highlight=True).read_text(encoding="utf-8")
         assert f"Style: Caption,Arial,{max(26, int(1920 * 0.038))}," in body
         assert f",{int(1080 * 0.07)},{int(1080 * 0.07)},{int(1920 * 0.16)},1" in body
-
-    def test_hook_banner_still_emitted_alongside_highlights(self, cues, tmp_path):
-        path = write_ass_file(cues, tmp_path / "h.ass", 1080, 1920,
-                              highlight=True, hook_text="WATCH THIS")
-        body = path.read_text(encoding="utf-8")
-        assert "HookHeader" in body and "WATCH THIS" in body
 
     def test_build_caption_cues_tuple_api_is_unchanged(self):
         """Existing callers and tests must keep working."""

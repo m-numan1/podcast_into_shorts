@@ -157,7 +157,6 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="checks">
       <label><input type="checkbox" id="demo"> Demo mode (synthetic fixture)</label>
       <label><input type="checkbox" id="render"> Render MP4s during analysis</label>
-      <label><input type="checkbox" id="enableHookBanner" checked> AI Hook Title Banner</label>
       <label for="aspectRatio">Format:
         <select id="aspectRatio" style="background:#1e293b; color:#fff; border:1px solid #334155; padding:.3rem .5rem; border-radius:6px; font-family:inherit; margin-left:.3rem;">
           <option value="9:16" selected>9:16 Vertical (Shorts/TikTok/Reels)</option>
@@ -281,7 +280,7 @@ function buildRenderBox(clip, card) {
 
   const btnCreate = el("button", "btn-card-create", "🎬 Create Short");
   btnCreate.type = "button";
-  btnCreate.title = "Render short with AI hook banner and styled subtitles";
+  btnCreate.title = "Render short with styled subtitles";
 
   const status = el("div", "card-status");
   status.style.display = "none";
@@ -319,7 +318,6 @@ async function renderSingleCard(clip, card, renderBox) {
         source,
         clip,
         aspect_ratio: $("aspectRatio").value,
-        enable_hook_banner: $("enableHookBanner").checked,
         subtitle_preset: $("subPreset").value,
       }),
     });
@@ -554,7 +552,6 @@ goBtn.addEventListener("click", async () => {
         demo,
         render: $("render").checked,
         aspect_ratio: $("aspectRatio").value,
-        enable_hook_banner: $("enableHookBanner").checked,
         language: $("transcriptLang").value || undefined,
         subtitle_preset: $("subPreset").value,
       }),
@@ -617,7 +614,6 @@ def _run_job(
     demo: bool,
     render: bool,
     aspect_ratio: str = "9:16",
-    enable_hook_banner: bool = True,
     language: str | None = None,
     subtitle_preset: str = "hormozi",
 ) -> None:
@@ -643,7 +639,6 @@ def _run_job(
             job_id, source, demo, render, aspect_ratio, settings.transcript_language or "auto", model_info, subtitle_preset,
         )
         settings.aspect_ratio = aspect_ratio  # type: ignore[assignment]
-        settings.enable_hook_banner = enable_hook_banner
         settings.subtitle_preset = subtitle_preset
         pipeline = VideoEditorPipeline()
         state = pipeline.run(source, demo_mode=demo, render=render, thread_id=job_id)
@@ -877,7 +872,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         aspect_ratio = str(payload.get("aspect_ratio") or "9:16").strip()
-        enable_hook_banner = bool(payload.get("enable_hook_banner", True))
         subtitle_preset = str(payload.get("subtitle_preset") or settings.subtitle_preset).strip()
         language = payload.get("language")
         if language is not None:
@@ -895,7 +889,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 renderer = ClipRenderer(
                     aspect_ratio=aspect_ratio,
-                    enable_hook_banner=enable_hook_banner,
                     subtitle_preset=subtitle_preset,
                 )
                 words = _lookup_cached_words(source, clip_data.get("id"))
@@ -904,7 +897,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                     media_path=source,
                     all_words=words,
                     aspect_ratio=aspect_ratio,
-                    enable_hook_banner=enable_hook_banner,
                     subtitle_preset=subtitle_preset,
                 )
                 self._send_json({"status": "done", "clip": updated_clip})
@@ -935,7 +927,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # server stays responsive.
         threading.Thread(
             target=_run_job,
-            args=(job_id, source, demo, render, aspect_ratio, enable_hook_banner, language, subtitle_preset),
+            args=(job_id, source, demo, render, aspect_ratio, language, subtitle_preset),
             daemon=True,
         ).start()
         self._send_json({"job_id": job_id, "status": "running"}, HTTPStatus.ACCEPTED)
