@@ -125,6 +125,7 @@ export default function Home() {
           source: payload.source,
           aspect_ratio: payload.aspect_ratio || '9:16',
           subtitle_preset: payload.subtitle_preset || 'hormozi',
+          render: true,
         }),
       });
 

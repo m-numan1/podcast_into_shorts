@@ -941,7 +941,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         source = str(payload.get("source") or "").strip()
         demo = bool(payload.get("demo"))
-        render = bool(payload.get("render"))
+        render_param = payload.get("render")
+        # Automatically render MP4 video clips by default
+        render = True if render_param is None else bool(render_param)
         if not source and not demo:
             self._send_json(
                 {"error": "Provide 'source', or set 'demo' to true."},
