@@ -128,7 +128,6 @@ class Settings(BaseSettings):
     # ---- Rendering ----
     render_enabled: bool = False
     aspect_ratio: Literal["9:16", "1:1", "16:9"] = "9:16"
-    enable_hook_banner: bool = True
     render_width: int = 1080
     render_height: int = 1920
     # "blur_pad" keeps the whole 16:9 frame visible against a blurred fill;

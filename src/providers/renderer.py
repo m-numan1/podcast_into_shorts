@@ -498,13 +498,11 @@ def write_ass_file(
     width: int,
     height: int,
     *,
-    hook_text: str | None = None,
-    hook_duration: float = 3.5,
     highlight: bool | None = None,
     font_name: str | None = None,
     preset: str | SubtitlePreset | None = None,
 ) -> Path:
-    """Write an ASS subtitle file styled for vertical/multi-format video with top hook banner."""
+    """Write an ASS subtitle file styled for vertical/multi-format video."""
     p = get_subtitle_preset(preset)
 
     font_size = max(26, int(height * p.font_size_ratio))
@@ -512,14 +510,8 @@ def write_ass_file(
     margin_h = int(width * p.margin_h_ratio)
     outline = max(2, int(font_size * p.outline_ratio))
 
-    hook_font_size = max(28, int(height * 0.042))
-    hook_margin_v = int(height * 0.06)
-    hook_margin_h = int(width * 0.05)
-
     resolved_cues = _as_cues(cues)
     sample_texts = [c.text for c in resolved_cues]
-    if hook_text:
-        sample_texts.append(hook_text)
     active_font = resolve_font(sample_texts, font_name, p.font_name)
 
     style_base = _ass_style_color(p.base_colour)
@@ -535,16 +527,11 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Caption,{active_font},{font_size},{style_base},&H000000FF,{style_outline},&HA0000000,-1,0,0,0,100,100,0,0,1,{outline},{p.shadow_width},{p.alignment},{margin_h},{margin_h},{margin_v},1
-Style: HookHeader,{active_font},{hook_font_size},&H00FFFFFF,&H000000FF,&H006366F1,&HA0000000,-1,0,0,0,100,100,0,0,1,{max(2, hook_font_size // 10)},2,8,{hook_margin_h},{hook_margin_h},{hook_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines: list[str] = []
-    if hook_text and _ass_escape(hook_text):
-        lines.append(
-            f"Dialogue: 1,0:00:00.00,{_ass_time(hook_duration)},HookHeader,,0,0,0,,{_ass_escape(hook_text)}"
-        )
 
     use_highlight = (
         settings.render_caption_highlight if highlight is None else highlight
@@ -571,11 +558,9 @@ class ClipRenderer:
     def __init__(
         self,
         aspect_ratio: str | None = None,
-        enable_hook_banner: bool = True,
         subtitle_preset: str | SubtitlePreset | None = None,
     ) -> None:
         self.aspect_ratio = aspect_ratio or settings.aspect_ratio
-        self.enable_hook_banner = enable_hook_banner
         self.subtitle_preset = subtitle_preset or getattr(settings, "subtitle_preset", "hormozi")
         self.width, self.height = settings.resolve_dimensions(self.aspect_ratio)
 
@@ -630,12 +615,10 @@ class ClipRenderer:
         has_video: bool,
         output_dir: Path | None = None,
         aspect_ratio: str | None = None,
-        enable_hook_banner: bool | None = None,
         subtitle_preset: str | SubtitlePreset | None = None,
     ) -> RenderResult:
         ratio = aspect_ratio or self.aspect_ratio
         self.width, self.height = settings.resolve_dimensions(ratio)
-        use_hook = self.enable_hook_banner if enable_hook_banner is None else enable_hook_banner
         active_preset = get_subtitle_preset(subtitle_preset or self.subtitle_preset)
 
         source = Path(media_path)
@@ -664,26 +647,16 @@ class ClipRenderer:
         end = max(start + 0.5, clip.adjusted_end_seconds)
         duration = end - start
 
-        hook_text = None
-        if use_hook:
-            hook_text = (
-                clip.suggested_thumbnail_text
-                or clip.hook
-                or clip.title
-            )
-
         ass_path: Path | None = None
         cues: list[CaptionCue] = []
-        if settings.render_burn_captions or hook_text:
-            if settings.render_burn_captions:
-                cues = group_caption_cues(all_words, start, end, words_per_cue=active_preset.words_per_cue)
-            if cues or hook_text:
+        if settings.render_burn_captions:
+            cues = group_caption_cues(all_words, start, end, words_per_cue=active_preset.words_per_cue)
+            if cues:
                 ass_path = write_ass_file(
                     cues,
                     out_dir / f"{safe_id}.ass",
                     self.width,
                     self.height,
-                    hook_text=hook_text if use_hook else None,
                     preset=active_preset,
                 )
 
@@ -721,8 +694,8 @@ class ClipRenderer:
         ]
 
         log.info(
-            "Rendering %s (%.1fs, ratio=%s, hook_banner=%s, preset=%s)",
-            clip.id, duration, ratio, bool(hook_text), active_preset.name,
+            "Rendering %s (%.1fs, ratio=%s, preset=%s)",
+            clip.id, duration, ratio, active_preset.name,
         )
         ffmpeg_tools.run(
             args,
@@ -751,7 +724,6 @@ class ClipRenderer:
         *,
         output_dir: Path | None = None,
         aspect_ratio: str | None = None,
-        enable_hook_banner: bool | None = None,
         subtitle_preset: str | SubtitlePreset | None = None,
     ) -> dict[str, Any]:
         """Convenience method to render a single clip dict or FinalClipOutput to MP4."""
@@ -762,7 +734,6 @@ class ClipRenderer:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         ratio = aspect_ratio or self.aspect_ratio or "9:16"
-        use_banner = self.enable_hook_banner if enable_hook_banner is None else enable_hook_banner
         preset = subtitle_preset or self.subtitle_preset
 
         if isinstance(clip_data, dict):
@@ -828,7 +799,6 @@ class ClipRenderer:
             has_video=has_vid,
             output_dir=out_dir,
             aspect_ratio=ratio,
-            enable_hook_banner=use_banner,
             subtitle_preset=preset,
         )
 
