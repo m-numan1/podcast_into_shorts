@@ -8,6 +8,7 @@ is where the actual reason always lives.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -98,6 +99,24 @@ def run(
     return proc
 
 
+def _probe_duration_fallback(path: Path) -> float | None:
+    try:
+        proc = run(
+            [ffmpeg_path(), "-i", str(path), "-f", "null", "-"],
+            error_cls=PipelineError,
+            what=f"ffmpeg fallback duration probe of {path.name}",
+            timeout=60.0,
+        )
+        stderr_text = proc.stderr.decode("utf-8", errors="replace")
+        matches = re.findall(r"time=(\d+):(\d+):(\d+\.\d+)", stderr_text)
+        if matches:
+            last = matches[-1]
+            return int(last[0]) * 3600 + int(last[1]) * 60 + float(last[2])
+    except Exception:
+        pass
+    return None
+
+
 def probe_duration(media_path: str | Path) -> float:
     """Return real media duration in seconds.
 
@@ -124,9 +143,13 @@ def probe_duration(media_path: str | Path) -> float:
     try:
         duration = float(raw)
     except ValueError as exc:
-        raise PipelineError(
-            f"ffprobe returned an unparseable duration for {path.name}: {raw!r}"
-        ) from exc
+        fallback = _probe_duration_fallback(path)
+        if fallback is not None and fallback > 0:
+            duration = fallback
+        else:
+            raise PipelineError(
+                f"ffprobe returned an unparseable duration for {path.name}: {raw!r}"
+            ) from exc
     if duration <= 0:
         raise PipelineError(f"ffprobe reported non-positive duration for {path.name}: {duration}")
     return duration

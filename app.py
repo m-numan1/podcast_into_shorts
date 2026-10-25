@@ -23,6 +23,7 @@ import threading
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from config.settings import settings
@@ -139,6 +140,272 @@ HTML_PAGE = """<!DOCTYPE html>
   .quick-label { color: var(--muted); font-weight: 500; }
   .btn-subtle { background: #1E293B; border: 1px solid #334155; color: #E2E8F0; padding: .45rem .85rem; border-radius: 7px; font-size: .82rem; cursor: pointer; font-family: inherit; display: inline-flex; align-items: center; gap: .35rem; }
   .btn-subtle:hover { background: #334155; border-color: #64748B; color: #fff; }
+
+  /* Local File Picker & Badge */
+  .btn-picker { background: #1E293B; border: 1px solid #4B5563; color: #E2E8F0; padding: .35rem .75rem; border-radius: 7px; font-size: .82rem; font-weight: 600; cursor: pointer; font-family: inherit; display: inline-flex; align-items: center; gap: .35rem; transition: background .15s, border-color .15s; }
+  .btn-picker:hover { background: #334155; border-color: var(--accent); color: #fff; }
+  .file-badge { margin: .55rem 0 .2rem; background: rgba(99, 102, 241, 0.12); border: 1px solid var(--accent); border-radius: 8px; padding: .45rem .8rem; display: inline-flex; align-items: center; gap: .6rem; font-size: .84rem; color: #C7D2FE; }
+  .file-badge-name { font-weight: 600; color: #fff; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-badge-size { color: var(--muted); font-size: .78rem; }
+  .file-badge-progress { font-weight: 600; font-size: .82rem; }
+  .btn-clear-file { background: transparent; border: none; color: var(--muted); font-size: 1.15rem; cursor: pointer; line-height: 1; padding: 0 .2rem; }
+  .btn-clear-file:hover { color: var(--err); }
+
+  /* Figma-Inspired Dialog & AI Processing Loader */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    animation: fadeIn .2s ease-out;
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .modal-dialog {
+    background: linear-gradient(145deg, #131B2E, #0F172A);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 20px;
+    width: 100%;
+    max-width: 580px;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 35px rgba(99, 102, 241, 0.15);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    animation: popIn .25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes popIn {
+    from { transform: scale(0.94); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .modal-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    font-size: .72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: #818CF8;
+    background: rgba(99, 102, 241, 0.15);
+    padding: .2rem .55rem;
+    border-radius: 999px;
+    margin-bottom: .25rem;
+  }
+  .pulsing-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #6366F1;
+    animation: pulseDot 1.4s infinite;
+  }
+  @keyframes pulseDot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .4; transform: scale(0.7); }
+  }
+  .modal-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #FFFFFF;
+    margin: 0;
+  }
+  .btn-modal-close {
+    width: 40px;
+    height: 40px;
+    border-radius: 9999px;
+    background: rgba(0, 0, 0, 0.9);
+    opacity: 0.85;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #FFFFFF;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform .15s, opacity .15s, background .15s;
+  }
+  .btn-modal-close:hover {
+    opacity: 1;
+    transform: scale(1.05);
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  .modal-body {
+    padding: 1.75rem 1.5rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+
+  /* Animated Glowing Orb Visual */
+  .loader-visual-container {
+    position: relative;
+    width: 90px;
+    height: 90px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.25rem;
+  }
+  .pulse-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid #6366F1;
+    animation: ringExpand 2.2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  }
+  .ring-2 {
+    animation-delay: 0.9s;
+    border-color: #EC4899;
+  }
+  @keyframes ringExpand {
+    0% { transform: scale(0.6); opacity: 0.8; }
+    100% { transform: scale(1.4); opacity: 0; }
+  }
+  .pulse-core {
+    width: 62px;
+    height: 62px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #6366F1, #8B5CF6);
+    box-shadow: 0 0 25px rgba(99, 102, 241, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.7rem;
+    z-index: 2;
+    animation: corePulse 2s ease-in-out infinite;
+  }
+  @keyframes corePulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+
+  .stage-info {
+    margin-bottom: 1.25rem;
+  }
+  .stage-main-text {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #FFFFFF;
+    margin-bottom: .25rem;
+  }
+  .stage-detail-text {
+    font-size: .88rem;
+    color: #94A3B8;
+  }
+
+  /* Progress Bar */
+  .progress-wrap {
+    width: 100%;
+    margin-bottom: 1.4rem;
+  }
+  .progress-bar-bg {
+    width: 100%;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    width: 15%;
+    height: 100%;
+    background: linear-gradient(90deg, #6366F1, #A855F7, #EC4899);
+    border-radius: 999px;
+    transition: width .4s ease;
+  }
+  .progress-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: .8rem;
+    color: #64748B;
+    margin-top: .4rem;
+  }
+  #loaderPercentText {
+    font-weight: 700;
+    color: #C7D2FE;
+  }
+
+  /* Pipeline Steps Indicator */
+  .pipeline-steps {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: .85rem .95rem;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    margin-bottom: 1rem;
+  }
+  .step-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .3rem;
+  }
+  .step-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #1E293B;
+    border: 1px solid #334155;
+    color: #94A3B8;
+    font-size: .75rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all .25s;
+  }
+  .step-label {
+    font-size: .72rem;
+    color: #64748B;
+    font-weight: 500;
+  }
+  .step-connector {
+    flex: 1;
+    height: 2px;
+    background: #1E293B;
+    margin: 0 .4rem -1rem .4rem;
+  }
+  .step-item.active .step-icon {
+    background: #6366F1;
+    border-color: #818CF8;
+    color: #fff;
+    box-shadow: 0 0 10px rgba(99, 102, 241, 0.6);
+    transform: scale(1.1);
+  }
+  .step-item.active .step-label {
+    color: #C7D2FE;
+    font-weight: 600;
+  }
+  .step-item.done .step-icon {
+    background: #10B981;
+    border-color: #10B981;
+    color: #fff;
+  }
+  .step-item.done .step-label {
+    color: #6EE7B7;
+  }
+
+  .tech-log-toggle {
+    margin-top: .4rem;
+  }
 </style>
 </head>
 <body>
@@ -149,14 +416,29 @@ HTML_PAGE = """<!DOCTYPE html>
   <div class="card">
     <div class="row">
       <div class="grow">
-        <label for="src">YouTube URL or local media path</label>
-        <input type="text" id="src" placeholder="https://www.youtube.com/watch?v=...">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.4rem;">
+          <label for="src" style="margin-bottom:0;">YouTube URL or Local Media File</label>
+          <div>
+            <button type="button" id="btnPickFile" class="btn-picker" title="Select a video or audio file from your device">
+              📁 Choose Local File
+            </button>
+            <input type="file" id="localFileInput" accept="video/*,audio/*,.mp4,.mp3,.wav,.m4a,.mkv,.mov,.webm,.flac,.opus" style="display:none;">
+          </div>
+        </div>
+        <input type="text" id="src" placeholder="Paste YouTube URL or choose a local file from device...">
       </div>
-      <button type="button" id="go">Analyse</button>
+      <button type="button" id="go">🎬 Create Shorts</button>
     </div>
+
+    <div id="fileInfoBox" class="file-badge" style="display:none;">
+      <span>📁</span>
+      <span id="fileBadgeName" class="file-badge-name"></span>
+      <span id="fileBadgeSize" class="file-badge-size"></span>
+      <span id="fileBadgeProgress" class="file-badge-progress"></span>
+      <button type="button" id="btnClearFile" class="btn-clear-file" title="Clear selected file">&times;</button>
+    </div>
+
     <div class="checks">
-      <label><input type="checkbox" id="demo"> Demo mode (synthetic fixture)</label>
-      <label><input type="checkbox" id="render"> Render MP4s during analysis</label>
       <label for="aspectRatio">Format:
         <select id="aspectRatio" style="background:#1e293b; color:#fff; border:1px solid #334155; padding:.3rem .5rem; border-radius:6px; font-family:inherit; margin-left:.3rem;">
           <option value="9:16" selected>9:16 Vertical (Shorts/TikTok/Reels)</option>
@@ -193,7 +475,6 @@ HTML_PAGE = """<!DOCTYPE html>
         <input type="file" id="jsonFileInput" accept=".json" style="display:none;">
       </label>
     </div>
-    <pre class="log" id="log" hidden></pre>
   </div>
 
   <div id="banners"></div>
@@ -209,6 +490,80 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 
   <div class="grid" id="grid"></div>
+
+  <!-- Processing Dialog Modal (Figma-inspired) -->
+  <div id="loaderModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-header-info">
+          <div class="modal-badge">
+            <span class="pulsing-dot"></span>
+            <span>AI Pipeline Active</span>
+          </div>
+          <h3 class="modal-title">Creating Your Shorts</h3>
+        </div>
+        <button type="button" id="btnCloseModal" class="btn-modal-close" title="Minimize dialog">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M1 1L11 11M1 11L11 1" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <div class="loader-visual-container">
+          <div class="pulse-ring ring-1"></div>
+          <div class="pulse-ring ring-2"></div>
+          <div class="pulse-core">
+            <span class="pulse-icon">🎬</span>
+          </div>
+        </div>
+
+        <div class="stage-info">
+          <div id="stageStatusText" class="stage-main-text">Analyzing media...</div>
+          <div id="stageDetailText" class="stage-detail-text">Preparing model environment</div>
+        </div>
+
+        <div class="progress-wrap">
+          <div class="progress-bar-bg">
+            <div id="loaderProgressBar" class="progress-bar-fill"></div>
+          </div>
+          <div class="progress-meta">
+            <span id="loaderPercentText">15%</span>
+            <span id="loaderEtaText">Directly creating vertical shorts</span>
+          </div>
+        </div>
+
+        <div class="pipeline-steps">
+          <div class="step-item active" id="step-dl">
+            <div class="step-icon">1</div>
+            <div class="step-label">Media & Audio</div>
+          </div>
+          <div class="step-connector"></div>
+          <div class="step-item" id="step-transcribe">
+            <div class="step-icon">2</div>
+            <div class="step-label">Whisper Captions</div>
+          </div>
+          <div class="step-connector"></div>
+          <div class="step-item" id="step-agents">
+            <div class="step-icon">3</div>
+            <div class="step-label">AI Editors</div>
+          </div>
+          <div class="step-connector"></div>
+          <div class="step-item" id="step-render">
+            <div class="step-icon">4</div>
+            <div class="step-label">Render Shorts</div>
+          </div>
+        </div>
+
+        <div class="tech-log-toggle">
+          <button type="button" id="btnToggleLog" class="btn-subtle" style="font-size:.78rem; padding:.3rem .6rem;">
+            ▶ View Technical Logs
+          </button>
+        </div>
+        <pre class="log" id="log" style="display:none;"></pre>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -217,13 +572,173 @@ const $ = (id) => document.getElementById(id);
 const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go");
 const batchBar = $("batchBar"), btnCreateAll = $("btnCreateAll");
 const btnLoadRecent = $("btnLoadRecent"), jsonFileInput = $("jsonFileInput");
+const btnPickFile = $("btnPickFile"), localFileInput = $("localFileInput");
+const fileInfoBox = $("fileInfoBox"), fileBadgeName = $("fileBadgeName");
+const fileBadgeSize = $("fileBadgeSize"), fileBadgeProgress = $("fileBadgeProgress");
+const btnClearFile = $("btnClearFile");
+
+/* Dialog Modal Elements */
+const loaderModal = $("loaderModal"), btnCloseModal = $("btnCloseModal");
+const stageStatusText = $("stageStatusText"), stageDetailText = $("stageDetailText");
+const loaderProgressBar = $("loaderProgressBar"), loaderPercentText = $("loaderPercentText");
+const btnToggleLog = $("btnToggleLog");
+
 let timer = null;
 let currentData = null;
 
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+btnPickFile.addEventListener("click", () => {
+  localFileInput.click();
+});
+
+localFileInput.addEventListener("change", () => {
+  const file = localFileInput.files && localFileInput.files[0];
+  if (!file) return;
+
+  fileBadgeName.textContent = file.name;
+  fileBadgeSize.textContent = `(${formatFileSize(file.size)})`;
+  fileBadgeProgress.textContent = "Uploading: 0%";
+  fileBadgeProgress.style.color = "var(--warn)";
+  fileInfoBox.style.display = "inline-flex";
+  goBtn.disabled = true;
+
+  logLine(`[upload] Selected local file: ${file.name} (${formatFileSize(file.size)})...`);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/upload?filename=" + encodeURIComponent(file.name));
+  xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
+
+  xhr.upload.onprogress = (evt) => {
+    if (evt.lengthComputable) {
+      const pct = Math.round((evt.loaded / evt.total) * 100);
+      fileBadgeProgress.textContent = `Uploading: ${pct}%`;
+    }
+  };
+
+  xhr.onload = () => {
+    goBtn.disabled = false;
+    if (xhr.status >= 200 && xhr.status < 300) {
+      try {
+        const resp = JSON.parse(xhr.responseText);
+        $("src").value = resp.path;
+        fileBadgeProgress.textContent = "✅ Ready";
+        fileBadgeProgress.style.color = "var(--ok)";
+        logLine(`[upload done] File ready for shorts: ${resp.path}`);
+      } catch (e) {
+        fileBadgeProgress.textContent = "❌ Parse error";
+        fileBadgeProgress.style.color = "var(--err)";
+        banner("error", "Error parsing upload response: " + e.message);
+      }
+    } else {
+      fileBadgeProgress.textContent = "❌ Upload failed";
+      fileBadgeProgress.style.color = "var(--err)";
+      banner("error", "Upload failed: " + xhr.responseText);
+    }
+  };
+
+  xhr.onerror = () => {
+    goBtn.disabled = false;
+    fileBadgeProgress.textContent = "❌ Network error";
+    fileBadgeProgress.style.color = "var(--err)";
+    banner("error", "Network error while uploading file.");
+  };
+
+  xhr.send(file);
+});
+
+btnClearFile.addEventListener("click", () => {
+  localFileInput.value = "";
+  fileInfoBox.style.display = "none";
+  if ($("src").value.includes("uploads") || $("src").value.includes("cache")) {
+    $("src").value = "";
+  }
+});
+
+function showLoader() {
+  loaderModal.style.display = "flex";
+  loaderProgressBar.style.width = "15%";
+  loaderPercentText.textContent = "15%";
+  stageStatusText.textContent = "Initializing Pipeline...";
+  stageDetailText.textContent = "Analyzing media source and preparing models";
+  updateStepIndicator(1);
+}
+
+function hideLoader() {
+  loaderModal.style.display = "none";
+}
+
+btnCloseModal.addEventListener("click", () => {
+  hideLoader();
+});
+
+btnToggleLog.addEventListener("click", () => {
+  if (logBox.style.display === "none" || !logBox.style.display) {
+    logBox.style.display = "block";
+    btnToggleLog.textContent = "▼ Hide Technical Logs";
+  } else {
+    logBox.style.display = "none";
+    btnToggleLog.textContent = "▶ View Technical Logs";
+  }
+});
+
+function updateStepIndicator(stepNum) {
+  const steps = [
+    { el: $("step-dl"), num: 1 },
+    { el: $("step-transcribe"), num: 2 },
+    { el: $("step-agents"), num: 3 },
+    { el: $("step-render"), num: 4 },
+  ];
+  steps.forEach(s => {
+    if (!s.el) return;
+    s.el.classList.remove("active", "done");
+    if (s.num < stepNum) s.el.classList.add("done");
+    else if (s.num === stepNum) s.el.classList.add("active");
+  });
+}
+
+function updatePipelineProgress(lastLine) {
+  if (!lastLine) return;
+  const line = lastLine.toLowerCase();
+
+  if (line.includes("download") || line.includes("extract audio") || line.includes("probing")) {
+    updateStepIndicator(1);
+    loaderProgressBar.style.width = "25%";
+    loaderPercentText.textContent = "25%";
+    stageStatusText.textContent = "Extracting Audio Track";
+    stageDetailText.textContent = "Converting source to 16kHz high-clarity mono WAV...";
+  } else if (line.includes("transcrib") || line.includes("whisper") || line.includes("caption")) {
+    updateStepIndicator(2);
+    loaderProgressBar.style.width = "50%";
+    loaderPercentText.textContent = "50%";
+    stageStatusText.textContent = "Transcribing with Whisper";
+    stageDetailText.textContent = "Generating word-level timestamped subtitle cues...";
+  } else if (line.includes("segment") || line.includes("candidate") || line.includes("feature") || line.includes("agent") || line.includes("editor")) {
+    updateStepIndicator(3);
+    loaderProgressBar.style.width = "75%";
+    loaderPercentText.textContent = "75%";
+    stageStatusText.textContent = "AI Editors Finding Best Clips";
+    stageDetailText.textContent = "Scoring hooks, storyline, virality, and viewer retention...";
+  } else if (line.includes("render") || line.includes("ffmpeg") || line.includes("burn")) {
+    updateStepIndicator(4);
+    loaderProgressBar.style.width = "90%";
+    loaderPercentText.textContent = "90%";
+    stageStatusText.textContent = "Rendering Vertical Shorts";
+    stageDetailText.textContent = "Reframing to 9:16 and burning styled animated subtitles...";
+  }
+}
+
 function logLine(text) {
-  logBox.hidden = false;
-  logBox.textContent += (logBox.textContent ? String.fromCharCode(10) : "") + text;
-  logBox.scrollTop = logBox.scrollHeight;
+  if (logBox) {
+    logBox.textContent += (logBox.textContent ? String.fromCharCode(10) : "") + text;
+    logBox.scrollTop = logBox.scrollHeight;
+  }
 }
 
 function el(tag, cls, text) {
@@ -358,8 +873,16 @@ function renderClips(data) {
   const clips = data.clips || [];
   if (clips.length > 0) {
     batchBar.style.display = "flex";
-    $("batchTitle").textContent = `🎬 ${clips.length} Clips Ready`;
-    $("batchSub").textContent = "Directly create shorts using the buttons on each card, or batch render below.";
+    const renderedCount = clips.filter(c => c.rendered_file_path).length;
+    if (renderedCount === clips.length) {
+      $("batchTitle").textContent = `🎬 ${clips.length} Shorts Ready`;
+      $("batchSub").textContent = "All shorts are rendered with styled subtitles. Watch, download, or re-render below.";
+      btnCreateAll.textContent = "🔄 Re-render All Shorts";
+    } else {
+      $("batchTitle").textContent = `🎬 ${clips.length} Clips Found (${renderedCount} Rendered)`;
+      $("batchSub").textContent = "Directly create shorts using the buttons on each card, or batch render below.";
+      btnCreateAll.textContent = "🎬 Create All Shorts";
+    }
   } else {
     batchBar.style.display = "none";
   }
@@ -499,10 +1022,15 @@ async function poll(jobId, seenLogs) {
   } catch (e) {
     logLine("[error] lost connection: " + e.message);
     clearInterval(timer); goBtn.disabled = false;
+    hideLoader();
     return seenLogs;
   }
   const data = await res.json();
-  (data.logs || []).slice(seenLogs).forEach(logLine);
+  const newLogs = (data.logs || []).slice(seenLogs);
+  newLogs.forEach(line => {
+    logLine(line);
+    updatePipelineProgress(line);
+  });
   const count = (data.logs || []).length;
 
   if (data.status === "running") return count;
@@ -512,6 +1040,7 @@ async function poll(jobId, seenLogs) {
   goBtn.disabled = false;
 
   if (data.status === "error") {
+    hideLoader();
     banners.replaceChildren();
     banner("error", "Failed at stage '" + (data.failed_stage || "unknown") + "': " + data.error);
     if (data.warnings && data.warnings.length) {
@@ -521,26 +1050,33 @@ async function poll(jobId, seenLogs) {
       box.appendChild(ul); banners.appendChild(box);
     }
   } else {
-    logLine("[done] " + (data.clips || []).length + " clips processed");
-    renderClips(data);
+    loaderProgressBar.style.width = "100%";
+    loaderPercentText.textContent = "100%";
+    stageStatusText.textContent = "🎉 Shorts Created!";
+    stageDetailText.textContent = `Generated ${(data.clips || []).length} shorts ready for download`;
+    updateStepIndicator(5);
+    setTimeout(() => {
+      hideLoader();
+      renderClips(data);
+    }, 800);
   }
   return count;
 }
 
 goBtn.addEventListener("click", async () => {
   const source = $("src").value.trim();
-  const demo = $("demo").checked;
   banners.replaceChildren();
   grid.replaceChildren();
 
-  if (!source && !demo) {
-    banner("error", "Please enter a YouTube URL / local file path, or check 'Demo mode'.");
+  if (!source) {
+    banner("error", "Please select a local media file or enter a YouTube URL.");
     return;
   }
 
   goBtn.disabled = true;
   logBox.textContent = "";
-  logLine("[start] " + (demo ? "demo mode" : source));
+  logLine("[start] Processing: " + source);
+  showLoader();
 
   let started;
   try {
@@ -549,8 +1085,8 @@ goBtn.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         source,
-        demo,
-        render: $("render").checked,
+        demo: false,
+        render: true,
         aspect_ratio: $("aspectRatio").value,
         language: $("transcriptLang").value || undefined,
         subtitle_preset: $("subPreset").value,
@@ -561,6 +1097,8 @@ goBtn.addEventListener("click", async () => {
   } catch (e) {
     logLine("[error] " + e.message);
     goBtn.disabled = false;
+    hideLoader();
+    banner("error", e.message);
     return;
   }
 
@@ -851,9 +1389,59 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = urlparse(self.path)
-        if route.path not in ("/api/analyze", "/api/render-card"):
+        if route.path not in ("/api/analyze", "/api/render-card", "/api/upload"):
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
+
+        if route.path == "/api/upload":
+            try:
+                query = parse_qs(route.query)
+                filename = query.get("filename", [""])[0] or self.headers.get("X-Filename", "")
+                filename = unquote(filename).strip() if filename else ""
+                if not filename:
+                    filename = f"upload_{uuid.uuid4().hex[:8]}.mp4"
+
+                safe_name = Path(filename).name
+                upload_dir = settings.cache_dir / "uploads"
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                dest = upload_dir / safe_name
+
+                raw_length = self.headers.get("Content-Length")
+                content_len = int(raw_length) if raw_length else None
+
+                bytes_written = 0
+                chunk_size = 1024 * 1024
+                with open(dest, "wb") as f:
+                    if content_len is not None:
+                        remaining = content_len
+                        while remaining > 0:
+                            buf = self.rfile.read(min(chunk_size, remaining))
+                            if not buf:
+                                break
+                            f.write(buf)
+                            remaining -= len(buf)
+                            bytes_written += len(buf)
+                    else:
+                        while True:
+                            buf = self.rfile.read(chunk_size)
+                            if not buf:
+                                break
+                            f.write(buf)
+                            bytes_written += len(buf)
+
+                dest_resolved = str(dest.resolve())
+                log.info("Uploaded local file %s (%d bytes) to %s", safe_name, bytes_written, dest_resolved)
+                self._send_json({
+                    "status": "ok",
+                    "path": dest_resolved,
+                    "filename": safe_name,
+                    "size_bytes": bytes_written,
+                })
+                return
+            except Exception as exc:
+                log.exception("Upload failed: %s", exc)
+                self._send_json({"error": f"Upload failed: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
 
         try:
             payload = self._read_json_body()
@@ -907,11 +1495,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
         source = str(payload.get("source") or "").strip()
-        demo = bool(payload.get("demo"))
-        render = bool(payload.get("render"))
+        demo = bool(payload.get("demo", False))
+        render = bool(payload.get("render", True))
         if not source and not demo:
             self._send_json(
-                {"error": "Provide 'source', or set 'demo' to true."},
+                {"error": "Please provide a YouTube URL or select a local media file."},
                 HTTPStatus.BAD_REQUEST,
             )
             return
