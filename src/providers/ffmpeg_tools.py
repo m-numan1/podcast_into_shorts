@@ -112,8 +112,8 @@ def _probe_duration_fallback(path: Path) -> float | None:
         if matches:
             last = matches[-1]
             return int(last[0]) * 3600 + int(last[1]) * 60 + float(last[2])
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Fallback duration probe failed for %s: %s", path.name, exc)
     return None
 
 
