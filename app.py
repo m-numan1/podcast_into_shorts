@@ -41,7 +41,7 @@ def _lookup_cached_words(source: str = "", clip_id: str | None = None) -> list:
     with _jobs_lock:
         if source and source in _cached_words and _cached_words[source]:
             return _cached_words[source]
-        for k, words in reversed(list(_cached_words.items())):
+        for words in reversed(list(_cached_words.values())):
             if words:
                 return words
     return []
@@ -1447,9 +1447,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
         except ValueError as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            return
-        except json.JSONDecodeError as exc:
-            self._send_json({"error": f"malformed JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
             return
         except Exception as exc:
             log.exception("Failed reading request body")

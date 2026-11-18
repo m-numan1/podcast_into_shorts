@@ -183,9 +183,17 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-350 tests. They cover the regression cases explicitly, including the
+609 tests. They cover the regression cases explicitly, including the
 zero-clip failure above, symmetric deduplication, cross-process embedding
 determinism, and that no stage can fabricate output.
+
+## Contributing
+
+Contributions are welcome! Please review [CONTRIBUTING.md](CONTRIBUTING.md) for environment setup and pull request guidelines.
+
+## License
+
+This project is open source. See the [LICENSE](LICENSE) file for details.
 
 ## Limitations
 

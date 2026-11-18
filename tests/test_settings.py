@@ -164,6 +164,7 @@ class TestAppModelInfo:
 
     def test_run_job_signature_accepts_arguments(self):
         import inspect
+
         import app
         sig = inspect.signature(app._run_job)
         assert len(sig.parameters) == 7

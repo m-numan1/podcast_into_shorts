@@ -232,10 +232,7 @@ class TranscriberProvider:
             # and keeps word pacing synchronized with actual speech.
             if i + 1 < len(sorted_raw):
                 next_start = float(self._field(sorted_raw[i + 1], "start", 0.0) or 0.0)
-                if next_start > start:
-                    end = min(raw_end, next_start)
-                else:
-                    end = raw_end
+                end = min(raw_end, next_start) if next_start > start else raw_end
             else:
                 end = raw_end
             end = max(end, start + 0.1)

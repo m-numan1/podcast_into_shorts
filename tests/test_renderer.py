@@ -368,7 +368,6 @@ class TestSubtitlePresets:
         return group_caption_cues(spoken, 0.0, 2.0)
 
     def test_hormozi_preset_styling(self, sample_cues, tmp_path):
-        from src.providers.renderer import SUBTITLE_PRESETS
         path = write_ass_file(sample_cues, tmp_path / "hormozi.ass", 1080, 1920, preset="hormozi", highlight=True)
         content = path.read_text(encoding="utf-8")
         # Check font, uppercase, and pop scale
@@ -443,8 +442,8 @@ class TestSubtitlePresets:
         cues = group_caption_cues(overlapping_words, 0.0, 5.0, words_per_cue=2)
         path = write_ass_file(cues, tmp_path / "no_overlap.ass", 1080, 1920, highlight=True)
         dialogue_lines = [
-            l for l in path.read_text(encoding="utf-8").splitlines()
-            if l.startswith("Dialogue: 0,")
+            line for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("Dialogue: 0,")
         ]
         # Parse start and end times for all caption dialogue events
         intervals = []

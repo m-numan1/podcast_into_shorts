@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from src.analysis.features import extract_features, extract_named_entities
-from src.analysis.nlp import analyze_sentiment, extract_spacy_entities, get_vader_analyzer
+from src.analysis.nlp import analyze_sentiment, get_vader_analyzer
 from src.providers.embeddings import FastEmbedEmbedder, build_embedder, cosine_similarity
 from src.schema.clips import SemanticChunk, SentenceUnit
 
