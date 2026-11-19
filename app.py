@@ -554,12 +554,6 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="step-label">Render Shorts</div>
           </div>
         </div>
-
-        <div class="tech-log-toggle">
-          <button type="button" id="btnToggleLog" class="btn-subtle" style="font-size:.78rem; padding:.3rem .6rem;">
-            ▶ View Technical Logs
-          </button>
-        </div>
         <pre class="log" id="log" style="display:none;"></pre>
       </div>
     </div>
