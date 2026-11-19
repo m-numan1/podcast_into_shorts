@@ -678,15 +678,13 @@ class ClipRenderer:
             ]
             filter_complex = self._audio_only_filter(bool(ass_name), ass_name)
 
+        encoder_name, encoder_args = ffmpeg_tools.get_video_encoder_args()
         args += [
             "-filter_complex", filter_complex,
             "-map", "[vout]",
             "-map", "0:a?",
             "-af", f"loudnorm=I={settings.render_loudness_lufs}:TP=-1.5:LRA=11",
-            "-c:v", "libx264",
-            "-preset", settings.render_preset,
-            "-crf", str(settings.render_crf),
-            "-pix_fmt", "yuv420p",
+            *encoder_args,
             "-c:a", "aac",
             "-b:a", "160k",
             "-movflags", "+faststart",
@@ -694,8 +692,8 @@ class ClipRenderer:
         ]
 
         log.info(
-            "Rendering %s (%.1fs, ratio=%s, preset=%s)",
-            clip.id, duration, ratio, active_preset.name,
+            "Rendering %s (%.1fs, ratio=%s, preset=%s, encoder=%s)",
+            clip.id, duration, ratio, active_preset.name, encoder_name,
         )
         ffmpeg_tools.run(
             args,

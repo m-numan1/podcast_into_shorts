@@ -410,7 +410,10 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
-  <h1>Podcast to Shorts</h1>
+  <div style="display:flex; align-items:center; gap:.8rem; flex-wrap:wrap; margin-bottom:.3rem;">
+    <h1 style="margin-bottom:0;">Podcast to Shorts</h1>
+    <span id="gpuBadge" style="font-size:.82rem; background:rgba(99,102,241,0.18); border:1px solid #6366F1; color:#C7D2FE; padding:.25rem .75rem; border-radius:999px; font-weight:600;">⚡ Detecting GPU...</span>
+  </div>
   <p class="sub">Finds self-contained clips in long-form audio and video, and directly creates vertical shorts with styled subtitles.</p>
 
   <div class="card">
@@ -469,6 +472,7 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
     <div class="quick-bar">
       <span class="quick-label">⚡ Direct Actions:</span>
+      <button type="button" id="btnTryDemo" class="btn-subtle" style="background:#312E81; border-color:#6366F1; color:#E0E7FF; font-weight:600;" title="Instantly test clip discovery on bundled sample podcast transcript without needing video file">🧪 Try Demo Sample</button>
       <button type="button" id="btnLoadRecent" class="btn-subtle" title="Load clips from outputs/final_clips.json">📂 Load Existing final_clips.json</button>
       <label class="btn-subtle" style="cursor:pointer;" title="Upload your own JSON file with clip timestamps">
         📤 Upload Custom JSON
@@ -565,7 +569,8 @@ HTML_PAGE = """<!DOCTYPE html>
 const $ = (id) => document.getElementById(id);
 const logBox = $("log"), grid = $("grid"), banners = $("banners"), goBtn = $("go");
 const batchBar = $("batchBar"), btnCreateAll = $("btnCreateAll");
-const btnLoadRecent = $("btnLoadRecent"), jsonFileInput = $("jsonFileInput");
+const btnLoadRecent = $("btnLoadRecent"), btnTryDemo = $("btnTryDemo"), jsonFileInput = $("jsonFileInput");
+const gpuBadge = $("gpuBadge");
 const btnPickFile = $("btnPickFile"), localFileInput = $("localFileInput");
 const fileInfoBox = $("fileInfoBox"), fileBadgeName = $("fileBadgeName");
 const fileBadgeSize = $("fileBadgeSize"), fileBadgeProgress = $("fileBadgeProgress");
@@ -816,7 +821,17 @@ async function renderSingleCard(clip, card, renderBox) {
     `🎬 Rendering short with ${subStyleName} subtitles...`
   ));
 
-  const source = $("src").value.trim() || (currentData && (currentData.media_file_path || currentData.source)) || "";
+  const cleanSrc = $("src").value.trim().replace(/^["']|["']$/g, "").trim();
+  const source = cleanSrc || (currentData && (currentData.media_file_path || currentData.source)) || "";
+
+  if (!source || source === "fixture" || (currentData && currentData.is_synthetic && !cleanSrc)) {
+    status.className = "card-status error";
+    status.replaceChildren();
+    status.textContent = "⚠️ This demo card has no raw video. Enter a YouTube URL or select a local video above to render real shorts.";
+    buttons.forEach(b => b.disabled = false);
+    return;
+  }
+
   logLine(`[start render] clip #${clip.rank} (${clip.title}) subtitle_preset=${$("subPreset").value}...`);
 
   try {
@@ -1057,19 +1072,13 @@ async function poll(jobId, seenLogs) {
   return count;
 }
 
-goBtn.addEventListener("click", async () => {
-  const source = $("src").value.trim();
+async function startAnalysis({ source = "", demo = false }) {
   banners.replaceChildren();
   grid.replaceChildren();
-
-  if (!source) {
-    banner("error", "Please select a local media file or enter a YouTube URL.");
-    return;
-  }
-
   goBtn.disabled = true;
+  if (btnTryDemo) btnTryDemo.disabled = true;
   logBox.textContent = "";
-  logLine("[start] Processing: " + source);
+  logLine(`[start] Processing ${demo ? "bundled demo fixture" : source}...`);
   showLoader();
 
   let started;
@@ -1078,9 +1087,9 @@ goBtn.addEventListener("click", async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        source,
-        demo: false,
-        render: true,
+        source: demo ? "" : source,
+        demo: demo,
+        render: !demo,
         aspect_ratio: $("aspectRatio").value,
         language: $("transcriptLang").value || undefined,
         subtitle_preset: $("subPreset").value,
@@ -1091,14 +1100,57 @@ goBtn.addEventListener("click", async () => {
   } catch (e) {
     logLine("[error] " + e.message);
     goBtn.disabled = false;
+    if (btnTryDemo) btnTryDemo.disabled = false;
     hideLoader();
     banner("error", e.message);
     return;
   }
 
   let seen = 0;
-  timer = setInterval(async () => { seen = await poll(started.job_id, seen); }, 800);
+  timer = setInterval(async () => {
+    seen = await poll(started.job_id, seen);
+    if (!timer) {
+      goBtn.disabled = false;
+      if (btnTryDemo) btnTryDemo.disabled = false;
+    }
+  }, 800);
+}
+
+if (btnTryDemo) {
+  btnTryDemo.addEventListener("click", () => {
+    $("src").value = "demo";
+    startAnalysis({ demo: true });
+  });
+}
+
+goBtn.addEventListener("click", async () => {
+  let source = $("src").value.trim().replace(/^["']|["']$/g, "").trim();
+  banners.replaceChildren();
+  grid.replaceChildren();
+
+  if (!source) {
+    $("src").focus();
+    $("src").style.borderColor = "var(--warn)";
+    banner("error", "Please paste a YouTube URL, select a local media file, or click 'Try Demo Sample'.");
+    return;
+  }
+  $("src").style.borderColor = "";
+
+  const isDemo = source.toLowerCase() === "demo";
+  startAnalysis({ source, demo: isDemo });
 });
+
+// Load hardware acceleration and model status
+fetch("/api/info")
+  .then(r => r.json())
+  .then(info => {
+    if (gpuBadge && info.gpu_info) {
+      gpuBadge.textContent = "⚡ " + info.gpu_info;
+      gpuBadge.title = "Hardware encoder detected and active for fast video rendering";
+    }
+  })
+  .catch(() => {});
+
 
 </script>
 </body>
@@ -1140,6 +1192,23 @@ def _get_model_info(reload_env: bool = True) -> str:
     return "Heuristic model (no LLM)"
 
 
+def _get_gpu_info() -> str:
+    """Return friendly GPU hardware acceleration name."""
+    try:
+        from src.providers import ffmpeg_tools
+        enc_name, _ = ffmpeg_tools.get_video_encoder_args()
+        display_names = {
+            "h264_qsv": "Intel QuickSync (GPU)",
+            "h264_nvenc": "NVIDIA NVENC (GPU)",
+            "h264_amf": "AMD AMF (GPU)",
+            "h264_videotoolbox": "Apple VideoToolbox (GPU)",
+            "libx264": "CPU (libx264)",
+        }
+        return display_names.get(enc_name, enc_name)
+    except Exception as exc:
+        return f"Auto ({exc})"
+
+
 def _run_job(
     job_id: str,
     source: str,
@@ -1162,6 +1231,9 @@ def _run_job(
 
     try:
         model_info = _get_model_info()
+        if source.strip().lower() == "demo":
+            demo = True
+            source = ""
         if language is not None:
             clean_lang = language.strip().lower()
             settings.transcript_language = None if clean_lang in ("auto", "auto-detect", "none", "") else language.strip()
@@ -1368,6 +1440,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": f"Failed reading {filename}: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
 
+        if route.path == "/api/info":
+            self._send_json({
+                "model_info": _get_model_info(),
+                "gpu_info": _get_gpu_info(),
+            })
+            return
+
         if route.path == "/api/list-json-files":
             try:
                 files = [f.name for f in settings.output_dir.glob("*.json") if f.is_file()]
@@ -1485,12 +1564,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "error", "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
 
-        source = str(payload.get("source") or "").strip()
+        source = str(payload.get("source") or "").strip().strip('"\'')
         demo = bool(payload.get("demo", False))
-        render = bool(payload.get("render", True))
+        if source.lower() == "demo":
+            demo = True
+            source = ""
+        render = bool(payload.get("render", not demo))
         if not source and not demo:
             self._send_json(
-                {"error": "Please provide a YouTube URL or select a local media file."},
+                {"error": "Please provide a YouTube URL, choose a local media file, or use demo mode."},
                 HTTPStatus.BAD_REQUEST,
             )
             return

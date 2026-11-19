@@ -171,3 +171,94 @@ def probe_has_video_stream(media_path: str | Path) -> bool:
         timeout=60.0,
     )
     return "video" in proc.stdout.decode("utf-8", errors="replace")
+
+
+_DETECTED_HWACCEL: tuple[str, list[str]] | None = None
+
+
+def get_video_encoder_args(preference: str | None = None) -> tuple[str, list[str]]:
+    """Determine the optimal video encoder and ffmpeg flags.
+
+    Auto-detects GPU hardware acceleration for built-in or discrete laptop GPUs:
+      - Intel QuickSync (h264_qsv)
+      - NVIDIA NVENC (h264_nvenc)
+      - AMD AMF (h264_amf)
+      - Apple VideoToolbox (h264_videotoolbox)
+    Falls back gracefully to CPU (libx264).
+    """
+    global _DETECTED_HWACCEL
+    mode = (preference or getattr(settings, "hwaccel", "auto") or "auto").strip().lower()
+
+    cpu_args = (
+        "libx264",
+        [
+            "-c:v", "libx264",
+            "-preset", settings.render_preset,
+            "-crf", str(settings.render_crf),
+            "-pix_fmt", "yuv420p",
+        ],
+    )
+
+    if mode in ("cpu", "libx264"):
+        return cpu_args
+
+    if _DETECTED_HWACCEL is not None and mode == "auto":
+        return _DETECTED_HWACCEL
+
+    binary = _find_binary(settings.ffmpeg_binary)
+    if not binary:
+        return cpu_args
+
+    candidates = [
+        (
+            "h264_nvenc",
+            ["-c:v", "h264_nvenc"],
+            ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(settings.render_crf), "-pix_fmt", "yuv420p"],
+        ),
+        (
+            "h264_qsv",
+            ["-c:v", "h264_qsv"],
+            ["-c:v", "h264_qsv", "-preset", settings.render_preset, "-global_quality", str(settings.render_crf), "-pix_fmt", "nv12"],
+        ),
+        (
+            "h264_amf",
+            ["-c:v", "h264_amf"],
+            ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", str(settings.render_crf), "-qp_p", str(settings.render_crf), "-pix_fmt", "yuv420p"],
+        ),
+        (
+            "h264_videotoolbox",
+            ["-c:v", "h264_videotoolbox"],
+            ["-c:v", "h264_videotoolbox", "-q:v", "65", "-pix_fmt", "yuv420p"],
+        ),
+    ]
+
+    if mode in ("qsv", "intel"):
+        candidates = [c for c in candidates if c[0] == "h264_qsv"]
+    elif mode in ("nvenc", "nvidia"):
+        candidates = [c for c in candidates if c[0] == "h264_nvenc"]
+    elif mode in ("amf", "amd"):
+        candidates = [c for c in candidates if c[0] == "h264_amf"]
+    elif mode in ("videotoolbox", "apple", "mac"):
+        candidates = [c for c in candidates if c[0] == "h264_videotoolbox"]
+
+    for enc_name, probe_flags, render_flags in candidates:
+        test_cmd = [
+            binary, "-y", "-hide_banner",
+            "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
+            *probe_flags,
+            "-f", "null", "-",
+        ]
+        try:
+            res = subprocess.run(test_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            if res.returncode == 0:
+                log.info("Detected GPU hardware video encoder: %s", enc_name)
+                _DETECTED_HWACCEL = (enc_name, render_flags)
+                return _DETECTED_HWACCEL
+        except Exception:
+            continue
+
+    log.info("No supported GPU hardware video encoder detected; using CPU (libx264)")
+    if mode == "auto":
+        _DETECTED_HWACCEL = cpu_args
+    return cpu_args
+

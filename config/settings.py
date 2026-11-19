@@ -138,6 +138,8 @@ class Settings(BaseSettings):
 
     render_crf: int = Field(default=20, ge=0, le=51)
     render_preset: str = "medium"
+    # Hardware acceleration / GPU encoding: "auto", "qsv" (Intel), "nvenc" (NVIDIA), "amf" (AMD), "videotoolbox" (Apple), "cpu"
+    hwaccel: str = "auto"
     render_burn_captions: bool = True
     # Highlight the currently-spoken word inside its cue, using the word-level
     # timings the transcript already carries. This is the short-form
